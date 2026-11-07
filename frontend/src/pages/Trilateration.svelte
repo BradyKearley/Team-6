@@ -112,6 +112,7 @@
         {placing}
         {showRanges}
         {mode}
+        layoutKey={live.data?.link?.source ?? ''}
         onplace={place}
         onselect={(n) => (selected = n)}
         onmove={move}

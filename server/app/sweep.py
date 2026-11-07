@@ -69,14 +69,17 @@ def fit_tower(points: list[SweepPoint]) -> dict:
 
 
 class Sweep:
-    def __init__(self, path: Path = DEFAULT_PATH):
+    """Recorded sweep points. path=None keeps them in memory only (used in sim mode)."""
+
+    def __init__(self, path: Path | None = DEFAULT_PATH):
         self.path = path
         self.points: list[SweepPoint] = []
-        if path.exists():
+        if path is not None and path.exists():
             self.points = [SweepPoint(**p) for p in json.loads(path.read_text())]
 
     def save(self) -> None:
-        self.path.write_text(json.dumps([asdict(p) for p in self.points], indent=1))
+        if self.path is not None:
+            self.path.write_text(json.dumps([asdict(p) for p in self.points], indent=1))
 
     def add_batch(self, distance: float, readings: dict[str, list[float]]) -> int:
         """Store one Record press. readings = {tower: [rssi samples]} (empty list = not heard)."""

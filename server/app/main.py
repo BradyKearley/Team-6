@@ -35,9 +35,11 @@ log = logging.getLogger("server")
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 # ---- shared state (one server = one of each) --------------------------------------
-towers = TowerStore()
+real_towers = TowerStore()  # your real layout, saved in towers.json
+towers = real_towers  # the layout in use right now (a fresh simulator layout while in sim mode)
 state = SystemState(towers)
-sweep = Sweep()  # calibration sweep points (saved to sweep.json)
+real_sweep = Sweep()  # calibration sweep points for the real towers (saved to sweep.json)
+sweep = real_sweep  # in sim mode: a throwaway in-memory sweep
 clients: set[WebSocket] = set()  # open browser websockets
 source = None  # the running SimulatorSource / SerialSource / BleSource
 source_port: str | None = None
@@ -79,14 +81,23 @@ class SourceIn(BaseModel):
 
 # ---- data source ----------------------------------------------------------------------
 async def switch_source(kind: str, port: str | None = None) -> None:
-    """Stop the current source (if any) and start a new one."""
-    global source, source_port, source_task
+    """Stop the current source (if any) and start a new one.
+
+    Sim mode always starts from the fixed simulator layout (reset every time);
+    USB/BLE use your real towers from towers.json.
+    """
+    global source, source_port, source_task, towers, sweep
     if source_task is not None:
         source_task.cancel()
         try:
             await source_task  # lets the serial source close its COM port
         except (asyncio.CancelledError, Exception):
             pass
+    if kind == "sim":
+        towers, sweep = TowerStore.simulator(), Sweep(path=None)
+    else:
+        towers, sweep = real_towers, real_sweep
+    state.towers = towers
     state.clear_live()
     if kind == "sim":
         source = SimulatorSource(towers)

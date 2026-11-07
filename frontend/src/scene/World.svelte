@@ -22,6 +22,7 @@
     placing,
     showRanges = true,
     mode = '3d', // '3d' orbit view, or '2d' top-down map
+    layoutKey = '', // changes when the tower layout is swapped (e.g. sim <-> real), to re-frame the camera
     onplace,
     onselect,
     onmove,
@@ -61,6 +62,10 @@
   // arrive, so the view doesn't jump around while you drag a tower.
   let fit = $state({ cx: 5, cy: 5, w: 10, h: 10 });
   let framed = $state(false);
+  $effect(() => {
+    layoutKey; // re-run when the layout is swapped
+    framed = false; // ...so the camera re-frames on the new towers
+  });
   $effect(() => {
     if (framed || !towers.length) return;
     const xs = towers.map((t) => t.x);

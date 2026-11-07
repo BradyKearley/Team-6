@@ -90,6 +90,7 @@ class SystemState:
         self.truth = None
         self.last_report_at = None
         self.reports = 0
+        self.calibration_points.clear()  # they belonged to the previous source's towers
         self.reset_track()
 
     def reset_track(self) -> None:

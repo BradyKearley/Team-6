@@ -1,5 +1,6 @@
 <script>
   import { api } from './api.js';
+  import { live } from './live.svelte.js';
   import { toFt, toM, fmtFt } from './units.js';
   import { nextTowerName } from './towers.js';
 
@@ -82,6 +83,11 @@
     <h2>Towers ({towers.length})</h2>
     <button onclick={addAtOrigin}>+ Add</button>
   </div>
+  {#if live.data?.link?.source === 'sim'}
+    <p class="simnote">
+      Simulator layout. It resets every time you switch to Sim, and changes here don't touch your real towers.
+    </p>
+  {/if}
 
   <table class="mono">
     <thead>
@@ -151,6 +157,15 @@
 </section>
 
 <style>
+  .simnote {
+    font-size: 11px;
+    color: #cfe5ff;
+    background: #10233a;
+    border: 1px solid #1f4a7a;
+    border-radius: 6px;
+    padding: 5px 8px;
+    margin: 0 0 8px;
+  }
   .head {
     display: flex;
     justify-content: space-between;
