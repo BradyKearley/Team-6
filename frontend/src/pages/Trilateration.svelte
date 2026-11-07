@@ -5,6 +5,7 @@
   import TowerPanel from '../lib/TowerPanel.svelte';
   import LiveStatus from '../lib/LiveStatus.svelte';
   import SetupTowers from '../lib/SetupTowers.svelte';
+  import CalibrationSweep from '../lib/CalibrationSweep.svelte';
   import { live } from '../lib/live.svelte.js';
   import { api } from '../lib/api.js';
   import { toFt, toM, snapFt } from '../lib/units.js';
@@ -13,6 +14,7 @@
   let selected = $state(null); // tower name
   let placing = $state(false); // click-on-grid-to-add mode
   let showSetup = $state(false); // Setup towers guide open?
+  let showSweep = $state(false); // Calibration sweep open?
   let dragPos = $state({}); // name -> {x, y} of a tower being dragged, until the server catches up
   let error = $state('');
 
@@ -94,6 +96,9 @@
 {#if showSetup}
   <SetupTowers onclose={() => (showSetup = false)} />
 {/if}
+{#if showSweep}
+  <CalibrationSweep onclose={() => (showSweep = false)} />
+{/if}
 
 <div class="page">
   <section class="view" class:placing>
@@ -123,6 +128,9 @@
       </button>
       <button class="primary" onclick={() => (showSetup = true)} title="Step-by-step: measure and place your real towers">
         Setup towers
+      </button>
+      <button onclick={() => (showSweep = true)} title="Record all towers at several known distances to calibrate them">
+        Calibration sweep
       </button>
       <button onclick={() => run(api.resetTrack)}>Reset track</button>
       <label class="chip">

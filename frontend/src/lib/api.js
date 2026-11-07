@@ -29,4 +29,10 @@ export const api = {
   setSource: (kind, port = null) => req('POST', '/api/source', { kind, port }),
   ports: () => req('GET', '/api/ports'),
   measure: (seconds = 3) => req('POST', '/api/measure', { seconds }),
+  // calibration sweep (distances in meters)
+  sweep: () => req('GET', '/api/sweep'),
+  sweepRecord: (known_distance, seconds = 6) => req('POST', '/api/sweep/record', { known_distance, seconds }),
+  sweepUndo: () => req('DELETE', '/api/sweep/last'),
+  sweepClear: () => req('DELETE', '/api/sweep'),
+  sweepApply: () => req('POST', '/api/sweep/apply'),
 };
