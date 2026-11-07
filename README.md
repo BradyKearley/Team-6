@@ -36,16 +36,20 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. A fake plane flies over the 4 towers in `server/towers.json`, and the green dot is its true position.
+Open http://localhost:5173. A fake plane flies over a fixed 4-tower practice layout, and the green dot is its true position. The simulator's towers reset every time you switch to **Sim**, and nothing you change there touches your real towers in `server/towers.json`.
 
 ## With hardware
 
 1. Flash towers: `cd cell-tower` then `pio run -e tower_a -t upload` (repeat for `tower_b`, `tower_c`, `tower_d`, one board each).
+   ESP32-C3 boards use `tower_c_c3` / `tower_d_c3` instead (see `cell-tower/README.md`).
 2. Flash the plane: `cd plane` then `pio run -t upload`. The OLED shows the towers it hears.
-3. Run the server with the plane over Bluetooth: `.venv\Scripts\python -m app.main --source ble`
-   (or plugged in over USB: `--source serial`, with `--port COM5` if auto-detect picks the wrong port).
-4. In the UI, place each tower where it really is (tape-measure x/y from a corner of the room, z = antenna height). Names must match the flashed `TOWER_NAME`.
-5. Calibrate: select a tower, hold the plane 1 m from it, click **Measure**. Repeat at about 5 m to also fit the path-loss exponent `n`. Calibration is saved in `server/towers.json`, so there's no reflashing.
+3. Start the server (`.venv\Scripts\python -m app.main`) and pick **USB** or **BLE** under *Data source* in the sidebar
+   (or start with `--source serial` / `--source ble`, plus `--port COM5` if USB auto-detect picks the wrong port).
+4. Calibrate with **Calibration sweep** in the toolbar: put all towers together, then record with the plane at 1, 2, 3 and 5 m and press **Apply**.
+   Points under 1 m are ignored (the radio saturates that close). Calibration is saved in `server/towers.json`, so there's no reflashing.
+   To update the plane's own OLED distances too, copy the values into `plane/src/calibration.h` and reflash.
+5. Place the towers with **Setup towers**: it measures each tower's distance from the plane at (0, 0), then you drag each tower to its real direction.
+   You can also type exact positions in the tower panel (feet). Names must match the flashed `TOWER_NAME`.
 
 Accuracy tips: RSSI ranging indoors is typically 1–5 m off. Spread the towers wide around the flight area, keep them in line of sight, put them at different heights (needed to solve altitude), and use 4 or more.
 
