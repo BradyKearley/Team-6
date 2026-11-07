@@ -7,7 +7,7 @@ Challenge 2.
  
 * Set up "plane"
    - We need to make a physical model that can hold everything
-   - Probably learn how to use MPU6050
+   - Probably learn how to use MPU6050 (accelerometers) 
    - Use camera?
    - Figure out what to recive wifi? (esp 32) (resberry 4 model e)
    
@@ -19,7 +19,12 @@ Challenge 2.
      
 * Extra
    - Look into using sun/stars for positioning
- 
+   - Simulate LEO satellite
+   - Kalman filter
+
+ * Video
+   - Make presentation for video
+   - record demonstration
 # TIMELINE STUFF
 
 * Sunday (before midnight?) submit video
