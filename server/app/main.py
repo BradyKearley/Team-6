@@ -28,6 +28,7 @@ from .sources.ble import BleSource
 from .sources.serial_src import SerialSource, guess_port
 from .sources.simulator import SimulatorSource
 from .state import SystemState
+from .sweep import Sweep
 from .towers import Tower, TowerStore
 
 log = logging.getLogger("server")
@@ -36,6 +37,7 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 # ---- shared state (one server = one of each) --------------------------------------
 towers = TowerStore()
 state = SystemState(towers)
+sweep = Sweep()  # calibration sweep points (saved to sweep.json)
 clients: set[WebSocket] = set()  # open browser websockets
 source = None  # the running SimulatorSource / SerialSource / BleSource
 source_port: str | None = None
@@ -59,6 +61,11 @@ class SecondsIn(BaseModel):
 
 class CalibrateIn(SecondsIn):
     known_distance: float = Field(gt=0.05)  # meters
+
+
+class SweepRecordIn(BaseModel):
+    known_distance: float = Field(gt=0.05, le=100)  # meters from the tower cluster
+    seconds: float = Field(6.0, gt=0.5, le=30.0)
 
 
 class SimIn(BaseModel):
@@ -114,11 +121,8 @@ def link_info() -> dict:
     return info
 
 
-async def measure_rssi(names: list[str], seconds: float) -> dict[str, tuple[float | None, int]]:
-    """Watch these towers for `seconds`. Returns {name: (median RSSI or None, sample count)}.
-
-    The median is None if fewer than 3 reports came in (tower off or out of range).
-    """
+async def collect_rssi(names: list[str], seconds: float) -> dict[str, list[float]]:
+    """Watch these towers for `seconds`. Returns {name: [RSSI of each NEW plane report]}."""
     samples: dict[str, list[float]] = {n: [] for n in names}
     last_seen: dict[str, float] = {}
     loop = asyncio.get_running_loop()
@@ -130,6 +134,15 @@ async def measure_rssi(names: list[str], seconds: float) -> dict[str, tuple[floa
                 samples[n].append(r.rssi)
                 last_seen[n] = r.at
         await asyncio.sleep(0.05)
+    return samples
+
+
+async def measure_rssi(names: list[str], seconds: float) -> dict[str, tuple[float | None, int]]:
+    """Like collect_rssi, but returns {name: (median RSSI or None, sample count)}.
+
+    The median is None if fewer than 3 reports came in (tower off or out of range).
+    """
+    samples = await collect_rssi(names, seconds)
     return {n: (statistics.median(s) if len(s) >= 3 else None, len(s)) for n, s in samples.items()}
 
 
@@ -232,6 +245,51 @@ async def calibrate(name: str, body: CalibrateIn):
 def clear_calibration(name: str):
     state.calibration_points.pop(name, None)
     return {"cleared": name}
+
+
+# ---- calibration sweep (all towers at several known distances) --------------------------------
+@app.get("/api/sweep")
+def get_sweep():
+    return sweep.to_json()
+
+
+@app.post("/api/sweep/record")
+async def sweep_record(body: SweepRecordIn):
+    """Record every tower's RSSI with the plane `known_distance` meters from the tower cluster."""
+    names = sorted({t.name for t in towers.all()} | set(state.readings))
+    if not names:
+        raise HTTPException(409, "no towers heard or placed yet")
+    readings = await collect_rssi(names, body.seconds)
+    sweep.add_batch(body.known_distance, readings)
+    return sweep.to_json()
+
+
+@app.delete("/api/sweep/last")
+def sweep_undo():
+    sweep.undo_last()
+    return sweep.to_json()
+
+
+@app.delete("/api/sweep")
+def sweep_clear():
+    sweep.clear()
+    return sweep.to_json()
+
+
+@app.post("/api/sweep/apply")
+def sweep_apply():
+    """Save each good fit's rssi1m and n to its tower (position is kept)."""
+    applied = []
+    for name, fit in sweep.fits().items():
+        tower = towers.get(name)
+        if tower is None or not fit["ok"]:
+            continue
+        tower.rssi1m = round(fit["rssi1m"], 1)
+        tower.n = round(fit["n"], 2)
+        towers.upsert(tower)
+        applied.append({"name": name, "rssi1m": tower.rssi1m, "n": tower.n})
+    state.reset_track()
+    return {"applied": applied}
 
 
 @app.post("/api/measure")

@@ -1,5 +1,6 @@
 # Python
 server/.venv/
+server/sweep.json
 __pycache__/
 .pytest_cache/
 
