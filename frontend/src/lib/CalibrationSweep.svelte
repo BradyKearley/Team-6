@@ -8,7 +8,9 @@
 
   let { onclose } = $props();
 
-  let data = $state({ points: [], fits: {}, spread_warn_db: 4 });
+  let data = $state({ points: [], fits: {}, spread_warn_db: 4, min_fit_distance_m: 0.95 });
+  // Closer than ~1 m the radio saturates, so those points are shown but not used in the fit.
+  const tooClose = (meters) => meters < data.min_fit_distance_m;
   let error = $state('');
   let message = $state('');
 
@@ -27,8 +29,8 @@
   });
 
   // ---- distance plan (feet, like the rest of the UI) --------------------------------
-  // Defaults are 0.3, 1, 2, 3 and 5 m.
-  let plan = $state([1, 3.3, 6.6, 9.8, 16.4]);
+  // Defaults are 1, 2, 3 and 5 m. (Closer than 1 m reads the same as 1 m, so it isn't useful.)
+  let plan = $state([3.3, 6.6, 9.8, 16.4]);
   let selected = $state(0); // index into plan
   let newDistFt = $state('');
 
@@ -125,7 +127,15 @@
           .map((d) => `${sx(d).toFixed(1)},${sy(curve(d)).toFixed(1)}`)
           .join(' ')
       : null;
-    return { dots: pts.map((p) => ({ x: sx(p.distance), y: sy(p.rssi), warn: p.spread > data.spread_warn_db })), line };
+    return {
+      dots: pts.map((p) => ({
+        x: sx(p.distance),
+        y: sy(p.rssi),
+        warn: p.spread > data.spread_warn_db,
+        unused: tooClose(p.distance),
+      })),
+      line,
+    };
   }
 
   const ft1 = (m) => Math.round(toFt(m) * 10) / 10;
@@ -147,7 +157,7 @@
       <ol class="howto">
         <li>Put <b>all towers together</b> in one spot, powered on, at their usual height.</li>
         <li>Put the plane at the distance selected below (measure from the towers), <b>step back</b>, and press <b>Record</b>. It listens for {RECORD_SECONDS} seconds.</li>
-        <li>Repeat for each distance. More distances = better fit. Then press <b>Apply</b>.</li>
+        <li>Repeat for each distance (1 m and farther; closer than that the signal saturates). Then press <b>Apply</b>.</li>
       </ol>
 
       {#if onSim}
@@ -169,6 +179,7 @@
           <span class="chip" class:sel={i === selected} class:done={isRecorded(ft)}>
             <button class="pick" onclick={() => (selected = i)} disabled={recording}>
               {#if isRecorded(ft)}✓ {/if}{ft} ft <span class="muted">({toM(ft).toFixed(2)} m)</span>
+              {#if tooClose(toM(ft))}<span class="close-tag" title="Under 1 m: recorded but not used in the fit">too close</span>{/if}
             </button>
             <button class="x" title="Remove distance" onclick={() => removeDistance(i)} disabled={recording}>×</button>
           </span>
@@ -195,8 +206,8 @@
             </thead>
             <tbody>
               {#each rows as row (row.batch)}
-                <tr class:last={row.batch === lastBatch}>
-                  <td>{ft1(row.distance)} ft</td>
+                <tr class:last={row.batch === lastBatch} class:unused={tooClose(row.distance)}>
+                  <td>{ft1(row.distance)} ft{#if tooClose(row.distance)} <small>(not fitted)</small>{/if}</td>
                   {#each towerNames as n}
                     {@const p = row.cells[n]}
                     {#if !p}
@@ -214,7 +225,10 @@
             </tbody>
           </table>
         </div>
-        <p class="muted small">Amber = readings jumped around (over {data.spread_warn_db} dB). Use Undo last and record that distance again.</p>
+        <p class="muted small">
+          Amber = readings jumped around (over {data.spread_warn_db} dB). Use Undo last and record that distance again.
+          Points under 1 m are greyed out and left out of the fit: that close, every tower reads about the same as at 1 m.
+        </p>
 
         <h2>Fit per tower</h2>
         <div class="fits">
@@ -228,7 +242,7 @@
               {#if c}
                 <svg viewBox={`0 0 ${CW} ${CH}`} class="chart" aria-label={`Tower ${name} signal vs distance`}>
                   {#if c.line}<polyline points={c.line} class="curve" />{/if}
-                  {#each c.dots as d}<circle cx={d.x} cy={d.y} r="3" class:warn={d.warn} />{/each}
+                  {#each c.dots as d}<circle cx={d.x} cy={d.y} r="3" class:warn={d.warn} class:unused={d.unused} />{/each}
                 </svg>
               {/if}
               {#if fit.ok}
@@ -493,6 +507,19 @@
     fill: var(--warn);
     stroke: #fff;
     stroke-width: 0.8;
+  }
+  .chart circle.unused {
+    fill: none;
+    stroke: var(--muted);
+    stroke-width: 1;
+  }
+  tr.unused td {
+    color: var(--muted);
+  }
+  .close-tag {
+    font-size: 10px;
+    color: var(--warn);
+    margin-left: 4px;
   }
   .nums {
     display: flex;

@@ -4,7 +4,7 @@ How it's used (see the Calibration sweep dialog in the UI):
   1. Put all towers together in one spot.
   2. Put the plane at a known distance from them and press Record.
      Every tower's RSSI is recorded at once (one "batch").
-  3. Repeat at more distances (e.g. 0.3, 1, 2, 3, 5 m).
+  3. Repeat at more distances (e.g. 1, 2, 3, 5 m). Points under 1 m are kept but not fitted.
   4. Each tower gets a least-squares fit of   rssi = rssi1m - 10 * n * log10(d)
      over all its points, and Apply saves rssi1m and n to the tower.
 
@@ -20,6 +20,9 @@ from pathlib import Path
 
 N_MIN, N_MAX = 1.5, 6.0  # allowed range for the path-loss exponent
 SPREAD_WARN_DB = 4.0  # a point whose readings vary more than this is worth redoing
+# Closer than ~1 m the plane's receiver saturates: real sweeps read the same at 0.3 m
+# as at 1 m, which wrecks the fit. Such points are recorded and shown, but not fitted.
+MIN_FIT_DISTANCE_M = 0.95
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "sweep.json"
 
 
@@ -35,10 +38,12 @@ class SweepPoint:
 
 def fit_tower(points: list[SweepPoint]) -> dict:
     """Fit rssi = rssi1m - 10 n log10(d) to one tower's heard points."""
-    heard = [p for p in points if p.rssi is not None and p.distance > 0]
-    out = {"points": len(heard), "distances": len({round(p.distance, 3) for p in heard})}
+    heard = [p for p in points if p.rssi is not None and p.distance >= MIN_FIT_DISTANCE_M]
+    too_close = sum(1 for p in points if p.rssi is not None and p.distance < MIN_FIT_DISTANCE_M)
+    out = {"points": len(heard), "distances": len({round(p.distance, 3) for p in heard}), "too_close": too_close}
+    skipped = f" {too_close} point(s) under 1 m not used (the radio saturates that close)." if too_close else ""
     if out["distances"] < 2:
-        return {**out, "ok": False, "quality": "need more", "note": "Record at 2 or more distances."}
+        return {**out, "ok": False, "quality": "need more", "note": "Record at 2 or more distances of 1 m or more." + skipped}
 
     xs = [-10 * math.log10(p.distance) for p in heard]  # so that rssi = rssi1m + n * x
     ys = [p.rssi for p in heard]
@@ -59,6 +64,7 @@ def fit_tower(points: list[SweepPoint]) -> dict:
         quality, note = "good", "Good fit."
     if clamped:
         note += f" Slope was limited to {N_MIN}-{N_MAX}; check the distances."
+    note += skipped
     return {**out, "ok": True, "rssi1m": rssi1m, "n": n, "rms": rms, "clamped": clamped, "quality": quality, "note": note}
 
 
@@ -105,4 +111,9 @@ class Sweep:
         return {t: fit_tower([p for p in self.points if p.tower == t]) for t in towers}
 
     def to_json(self) -> dict:
-        return {"points": [asdict(p) for p in self.points], "fits": self.fits(), "spread_warn_db": SPREAD_WARN_DB}
+        return {
+            "points": [asdict(p) for p in self.points],
+            "fits": self.fits(),
+            "spread_warn_db": SPREAD_WARN_DB,
+            "min_fit_distance_m": MIN_FIT_DISTANCE_M,
+        }
