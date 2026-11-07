@@ -21,6 +21,11 @@ pio device monitor
 tells the plane which tower is which, and the server maps names to tower positions.
 To add a tower E, copy an `[env:tower_x]` block in `platformio.ini`.
 
+**ESP32-C3 boards:** the `tower_*` envs are for the classic ESP32 only. `tower_c_c3` / `tower_d_c3` build
+towers C / D for an ESP32-C3 (native USB serial, LED on GPIO8; shared settings in `[c3]`).
+A C3 antenna differs from a WROOM one, so give C3 towers their own `rssi1m` in the server.
+Never run two boards with the same name (e.g. `tower_c` and `tower_c_c3`) at once.
+
 ## Settings (`platformio.ini` build flags)
 
 | Flag | Default | Notes |

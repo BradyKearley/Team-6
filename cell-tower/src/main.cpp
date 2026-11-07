@@ -9,6 +9,11 @@
 
 #include "tower_packet.h"
 
+#ifdef DISABLE_BROWNOUT
+#include <soc/rtc_cntl_reg.h>
+#include <soc/soc.h>
+#endif
+
 #ifndef TOWER_NAME
 #define TOWER_NAME "A"
 #endif
@@ -21,6 +26,11 @@
 #ifndef LED_PIN
 #define LED_PIN 2
 #endif
+// Level that lights the LED: HIGH on DevKits, LOW on C3 SuperMini boards.
+#ifndef LED_ON
+#define LED_ON HIGH
+#endif
+#define LED_OFF (!(LED_ON))
 // esp_wifi_set_max_tx_power() takes units of 0.25 dBm; 84 = 21 dBm (max).
 #ifndef TX_POWER_QDBM
 #define TX_POWER_QDBM 84
@@ -49,8 +59,16 @@ static void fail(const char *what, esp_err_t err) {
 void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
+  digitalWrite(LED_PIN, LED_OFF);
   delay(200);
+  // Printed before WiFi starts: if this repeats with "Brownout detector was
+  // triggered" in between, the board's supply sags at WiFi power-up.
+  Serial.printf("[tower %s] boot, starting WiFi\n", TOWER_NAME);
+  Serial.flush();
+#ifdef DISABLE_BROWNOUT
+  // Diagnostic only: keep running through supply dips instead of resetting.
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+#endif
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -105,7 +123,7 @@ void loop() {
     packet.seq++;
     esp_err_t err = esp_now_send(kBroadcast, (const uint8_t *)&packet, sizeof(packet));
     if (err == ESP_OK) {
-      digitalWrite(LED_PIN, HIGH);
+      digitalWrite(LED_PIN, LED_ON);
       ledOffAt = now + 5;
     } else {
       sendFail++;
@@ -113,7 +131,7 @@ void loop() {
   }
 
   if (ledOffAt && (int32_t)(now - ledOffAt) >= 0) {
-    digitalWrite(LED_PIN, LOW);
+    digitalWrite(LED_PIN, LED_OFF);
     ledOffAt = 0;
   }
 
