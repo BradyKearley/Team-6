@@ -5,10 +5,20 @@
 
 #include <algorithm>
 
+#include "calibration.h"
+
 static TowerState towers[RANGING_MAX_TOWERS];
 
-float rssiToDistance(float rssi) {
-  return powf(10.0f, (RSSI_AT_1M - rssi) / (10.0f * PATH_LOSS_N));
+float rssiToDistance(const char *name, float rssi) {
+  float rssi1m = RSSI_AT_1M, n = PATH_LOSS_N;
+  for (const auto &c : TOWER_CAL) {
+    if (strncmp(c.name, name, TOWER_NAME_LEN) == 0) {
+      rssi1m = c.rssi1m;
+      n = c.n;
+      break;
+    }
+  }
+  return powf(10.0f, (rssi1m - rssi) / (10.0f * n));
 }
 
 static TowerState *findOrCreate(const char *name) {
@@ -69,7 +79,7 @@ void rangingAddSample(const TowerSample &s) {
   } else {
     t->ema += RANGING_EMA_ALPHA * (s.rssi - t->ema);
   }
-  t->distance = rssiToDistance(t->ema);
+  t->distance = rssiToDistance(t->name, t->ema);
 }
 
 void rangingExpire(uint32_t nowMs) {

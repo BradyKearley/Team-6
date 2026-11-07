@@ -4,7 +4,7 @@
 //   raw RSSI -> window of the last RANGING_WINDOW samples
 //            -> reject samples far from the window median (outliers)
 //            -> EMA on accepted samples = filtered RSSI
-//            -> d = 10^((RSSI_AT_1M - rssi) / (10 * PATH_LOSS_N))
+//            -> d = 10^((rssi1m - rssi) / (10 * n)), per-tower values in calibration.h
 // Towers silent for RANGING_TIMEOUT_MS are dropped.
 //
 // Not thread-safe by itself: only call from loop() (tower_rx hands samples
@@ -53,4 +53,5 @@ void rangingExpire(uint32_t nowMs);
 const TowerState *rangingTowers();
 int rangingMaxTowers();
 
-float rssiToDistance(float rssi);
+// Uses the tower's entry in calibration.h, else RSSI_AT_1M / PATH_LOSS_N.
+float rssiToDistance(const char *name, float rssi);
