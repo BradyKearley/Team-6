@@ -40,7 +40,7 @@
     // The model's nose is +X and scene yaw turns about +Y, while the sim's heading is
     // measured clockwise from north (which is -Z here): nose direction = yaw of pi/2 - hdg.
     yaw += wrap(Math.PI / 2 - now.hdg - yaw) * k;
-    bank += (-now.bank - bank) * k;
+    bank += (now.bank - bank) * k;
     pitch += (now.gam - pitch) * k;
     spin = (spin + dt * 40) % (Math.PI * 2);
   });
@@ -211,7 +211,8 @@
 
 <!-- the aeroplane: yaw group, then bank/pitch inside it, nose along +X -->
 <T.Group position={shown} rotation.y={yaw}>
-  <T.Group rotation.x={-pitch} rotation.z={bank} scale={PLANE_SCALE}>
+  <!-- with the nose on +X, rolling is about X (+ = right wing down) and pitching about Z (+ = nose up) -->
+  <T.Group rotation.x={bank} rotation.z={pitch} scale={PLANE_SCALE}>
     <T.Mesh geometry={parts.fuselage}>
       <T.MeshPhysicalMaterial color="#f4f6f8" metalness={0.1} roughness={0.35} clearcoat={0.7} />
     </T.Mesh>

@@ -43,4 +43,8 @@ export const api = {
   flightList: () => req('GET', '/api/flight/list'),
   flightReplay: (name = 'fused') => req('GET', `/api/flight/replay?name=${encodeURIComponent(name)}`),
   flightNetwork: (name = 'fused') => req('GET', `/api/flight/network?name=${encodeURIComponent(name)}`),
+  // the same policy flown live by the server (flightsim/live.py)
+  flightScenarios: () => req('GET', '/api/flight/scenarios'),
+  flightLive: (params) => req('POST', '/api/flight/live', params),
+  flightBatch: (params) => req('POST', '/api/flight/batch', params),
 };

@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from env import EnvConfig, FlightEnv
+from live import rollout
 from ppo import ActorCritic, RunningNorm
 
 
@@ -42,83 +43,29 @@ def make_env(ck, seed, towers=None, orbit_error=None, wind=None):
     return FlightEnv(cfg, seed=seed)
 
 
-def sky_view(env, reading):
-    """Satellites as the aeroplane sees them: azimuth/elevation and their Doppler."""
-    out = []
-    for k, valid in enumerate(reading.sat_valid):
-        if not valid:
-            continue
-        e, n, u = env.anchor.R.T @ reading.sat_dirs[k]          # ECEF direction -> local
-        out.append({
-            "n": env.suite.sky.names[reading.sat_ids[k]].replace("IRIDIUM ", "") if k < len(reading.sat_ids) else "?",
-            "az": round(float(np.degrees(np.arctan2(e, n))) % 360.0, 1),
-            "el": round(float(np.degrees(np.arcsin(np.clip(u, -1, 1)))), 1),
-            "khz": round(float(reading.sat_doppler[k]), 2),
-        })
-    return out
-
-
 def fly(model, norm, env, deterministic=True, record=False):
     """One flight. Returns a summary, and the whole track if `record`."""
-    obs = env.reset()
-    frames = []
-    total = 0.0
-    nav, alt = [], []
-    while True:
+    def act(obs):
         with torch.no_grad():
             o = torch.as_tensor(norm(obs[None]), dtype=torch.float32)
-            a = model.pi(o)[0].numpy() if deterministic else model.act(o)[0][0].numpy()
-        a = np.clip(a, -1.0, 1.0)      # what the aeroplane actually gets, so that's what we record
-        obs, r, done, trunc, info = env.step(a)
-        total += r
-        nav.append(info["nav_error"])
-        alt.append(abs(info["alt_error"]))
-        if record:
-            s = env.state
-            rd = env.reading
-            frames.append({
-                "obs": [round(float(v), 3) for v in obs],
-                "act": [round(float(v), 3) for v in a],
-                "sky": sky_view(env, rd),
-                "twr": [{"i": int(b), "km": round(float(rd.tower_range[k]) / 1000.0, 2)}
-                        for k, b in enumerate(rd.tower_ids[: len(rd.tower_valid)])],
-                "t": round(env.steps * env.cfg.dt, 2),
-                "p": [round(float(v), 1) for v in s.pos],
-                "e": [round(float(v), 1) for v in info["est_pos"]],
-                "hdg": round(float(s.heading), 4),
-                "bank": round(float(s.bank), 4),
-                "gam": round(float(s.gamma), 4),
-                "v": round(float(s.airspeed), 1),
-                "wp": env.wp,
-                "sats": info["n_sats"],
-                "towers": info["n_towers"],
-                "nav": round(info["nav_error"], 1),
-            })
-        if done or trunc:
-            break
-    out = {"return": total, "captured": env.captured, "crashed": info["crashed"],
-           "steps": env.steps, "nav_error": float(np.mean(nav)), "alt_error": float(np.mean(alt)),
-           "route_done": env.captured >= len(env.route)}
-    if record:
-        out["flight"] = {
-            "dt": env.cfg.dt,
-            "obs_mode": env.cfg.obs_mode,
-            "obs_labels": env.obs_labels(),
-            "obs_groups": env.obs_groups(),
-            "obs_sources": env.obs_sources(),
-            "act_labels": ["Bank command", "Pitch command", "Throttle"],
-            "target_alt": env.cfg.target_alt,
-            "capture_m": env.cfg.capture_m,
-            "n_towers": len(env.towers),
-            "wind": [round(float(v), 2) for v in env.wind],
-            # the randomised anchor this flight actually used, not the config default
-            "anchor": [round(float(np.degrees(env.anchor.lat)), 3),
-                       round(float(np.degrees(env.anchor.lon)), 3)],
-            "towers": [[round(float(v), 1) for v in t] for t in env.towers],
-            "route": [[round(float(v), 1) for v in w] for w in env.route],
-            "frames": frames,
-        }
-    return out
+            return model.pi(o)[0].numpy() if deterministic else model.act(o)[0][0].numpy()
+    return rollout(act, env, record)
+
+
+def export_policy(ck_path: str, out_path: str, name: str):
+    """Write the actor's weights as JSON, so the web server can fly it without torch."""
+    ck = torch.load(ck_path, map_location="cpu", weights_only=False)
+    sd = ck["model"]
+    idx = sorted(int(k.split(".")[1]) for k in sd if k.startswith("pi.") and k.endswith(".weight"))
+    with open(out_path, "w") as f:
+        json.dump({"name": name, "obs_mode": ck["obs_mode"], "towers": ck.get("towers", -1),
+                   "wind": ck.get("wind", 25.0), "orbit_error": ck.get("orbit_error", 0.0),
+                   "obs_dim": ck["obs_dim"], "act_dim": ck["act_dim"],
+                   "steps": ck.get("steps"), "return": ck.get("return"),
+                   "layers": [{"w": sd[f"pi.{i}.weight"].tolist(), "b": sd[f"pi.{i}.bias"].tolist()} for i in idx],
+                   "norm": {"mean": np.asarray(ck["norm"]["mean"]).tolist(),
+                            "var": np.asarray(ck["norm"]["var"]).tolist()}}, f)
+    return out_path
 
 
 def main():
@@ -131,9 +78,13 @@ def main():
     ap.add_argument("--towers", type=int, default=None, help="override the tower count (0 = satellites only)")
     ap.add_argument("--orbit-error", type=float, default=None, help="override the satellite position error [m]")
     ap.add_argument("--wind", type=float, default=None, help="override the maximum wind [m/s]")
+    ap.add_argument("--export", action="store_true", help="write runs/<name>.policy.json for the web UI and stop")
     a = ap.parse_args()
 
     path = os.path.join("runs", f"{a.name}.pt")
+    if a.export:
+        print("wrote", export_policy(path, os.path.join("runs", f"{a.name}.policy.json"), a.name))
+        return
     model, norm, ck = load_policy(path)
     print(f"{path}: {ck['obs_mode']} observations, {ck.get('towers', 4)} towers, "
           f"trained {ck['steps']:,} steps (mean return {ck['return']:.1f})")

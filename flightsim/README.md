@@ -14,7 +14,12 @@ Watch a flight in the web UI under **RL Autopilot**.
  ppo.py        PPO (clipped surrogate, GAE, running observation normalisation)
  train.py      CLI trainer -> runs/<name>.pt
  fly.py        flies a checkpoint and writes runs/<name>.flight.json for the UI to replay
+ live.py       flies the policy on demand for the web UI, in the situations listed in SCENARIOS
 ```
+
+`train.py` also writes `runs/<name>.policy.json`, the network's weights as plain JSON, which is
+what the server flies with numpy (no torch needed). For a checkpoint trained before that existed,
+run `python fly.py --name <name> --export`.
 
 ## Quick start
 

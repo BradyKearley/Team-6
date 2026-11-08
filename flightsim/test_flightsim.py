@@ -1,4 +1,5 @@
 """Run with:  .venv/bin/python -m pytest -q"""
+import json
 import os
 
 import numpy as np
@@ -6,6 +7,8 @@ import pytest
 
 import dynamics as dyn
 from env import EnvConfig, FlightEnv
+from live import SCENARIOS, make_env
+from live import rollout as fly_rollout
 from ppo import ActorCritic, PPOConfig, RunningNorm, VecEnv, rollout, update
 from sensors import Anchor
 
@@ -150,6 +153,65 @@ def test_one_ppo_update_runs():
     assert all(np.isfinite(b).all() for b in batch)
     update(model, opt, batch, norm, cfg, torch.device("cpu"))
     assert any(not torch.equal(a, b) for a, b in zip(before, model.parameters()))
+
+
+# ---- flying it live -----------------------------------------------------------------
+def _exported(tmp_path, obs_dim=19):
+    """A freshly initialised network, saved and exported the way train.py does it."""
+    import torch
+
+    from fly import export_policy
+    from live import Policy
+
+    model = ActorCritic(obs_dim, 3)
+    norm = RunningNorm(obs_dim)
+    norm.update(np.random.default_rng(0).normal(0, 3, (500, obs_dim)))
+    ck = tmp_path / "t.pt"
+    torch.save({"model": model.state_dict(), "norm": norm.state_dict(), "obs_mode": "fused",
+                "towers": 4, "wind": 25.0, "orbit_error": 0.0, "obs_dim": obs_dim, "act_dim": 3}, ck)
+    out = tmp_path / "t.policy.json"
+    export_policy(str(ck), str(out), "t")
+    with open(out) as f:
+        return model, norm, Policy(json.load(f))
+
+
+def test_exported_policy_matches_the_torch_network(tmp_path):
+    """The server flies the numpy copy, so it has to be the same network."""
+    import torch
+
+    model, norm, policy = _exported(tmp_path)
+    for obs in np.random.default_rng(1).normal(0, 2, (50, 19)):
+        with torch.no_grad():
+            want = model.pi(torch.as_tensor(norm(obs[None]), dtype=torch.float32))[0].numpy()
+        assert np.allclose(policy(obs), want, atol=1e-5)
+
+
+@pytest.mark.parametrize("key", list(SCENARIOS))
+def test_every_scenario_builds_a_flyable_env(key, tmp_path):
+    _, _, policy = _exported(tmp_path)
+    env = make_env(policy, key, seed=3)
+    env.cfg.max_steps = 5
+    r = fly_rollout(policy, env, record=True)
+    assert r["steps"] <= 5 and r["outcome"] and len(r["flight"]["frames"]) == r["steps"]
+    json.dumps(r)                # the server sends this straight to the browser
+
+
+def test_scenarios_change_what_they_claim(tmp_path):
+    _, _, policy = _exported(tmp_path)
+    assert len(make_env(policy, "sats_only", 1).towers) == 0
+    assert np.linalg.norm(make_env(policy, "calm", 1).wind) == 0.0
+    assert 45.0 <= np.linalg.norm(make_env(policy, "gale", 1).wind) <= 60.0
+    assert len(make_env(policy, "long_haul", 1).route) == 6
+    assert np.degrees(make_env(policy, "polar", 1).anchor.lat) >= 75.0
+    assert make_env(policy, "bad_orbits", 1).cfg.sensors.orbit_err_m == 1500.0
+
+
+def test_same_seed_is_the_same_live_flight(tmp_path):
+    """The page re-flies a seed to show one flight from a batch, so it must be repeatable."""
+    _, _, policy = _exported(tmp_path)
+    a = fly_rollout(policy, make_env(policy, "standard", 11))
+    b = fly_rollout(policy, make_env(policy, "standard", 11))
+    assert a == b
 
 
 @pytest.mark.skipif(not os.path.exists("runs/fused.pt"), reason="no trained policy yet")
