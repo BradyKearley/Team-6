@@ -110,3 +110,35 @@ h2 {
   font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
   font-variant-numeric: tabular-nums;
 }
+
+/* Tooltips from lib/hint.js. Appended to <body>, so the styling has to be global. */
+.t6-hint {
+  position: fixed;
+  z-index: 1000;
+  max-width: 300px;
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.08s;
+}
+
+/* Anything explained by a tooltip gets a quiet underline so you know to hover it. */
+[aria-describedby^='hint-'] {
+  outline: none;
+}
+.hinted {
+  text-decoration: underline dotted var(--border);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.hinted:hover,
+.hinted:focus-visible {
+  text-decoration-color: var(--accent);
+}
