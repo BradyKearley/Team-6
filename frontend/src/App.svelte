@@ -2,14 +2,18 @@
   import Sidebar from './lib/Sidebar.svelte';
   import Trilateration from './pages/Trilateration.svelte';
   import Placeholder from './pages/Placeholder.svelte';
+  import LeoSat from './pages/LeoSat.svelte';
+  import Fusion from './pages/Fusion.svelte';
+  import Autopilot from './pages/Autopilot.svelte';
 
   // Add new tracking methods here; each gets a sidebar entry and a page.
   const pages = [
     { id: 'trilateration', label: 'Cell Tower Trilateration', icon: 'tower', component: Trilateration },
     { id: 'imu', label: 'IMU / Dead Reckoning', icon: 'compass', component: Placeholder },
     { id: 'star', label: 'Star Camera', icon: 'star', component: Placeholder },
-    { id: 'leo', label: 'LEO Satellite', icon: 'satellite', component: Placeholder },
-    { id: 'fusion', label: 'Sensor Fusion', icon: 'fusion', component: Placeholder },
+    { id: 'leo', label: 'LEO Satellite', icon: 'satellite', component: LeoSat },
+    { id: 'fusion', label: 'Sensor Fusion', icon: 'fusion', component: Fusion },
+    { id: 'autopilot', label: 'RL Autopilot', icon: 'plane', component: Autopilot },
     { id: 'sensors', label: 'Raw Sensor Data', icon: 'activity', component: Placeholder },
   ];
 
