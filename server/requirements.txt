@@ -6,3 +6,4 @@ skyfield>=1.49          # LEO satellite page: Iridium orbit propagation (app/leo
 bleak>=0.22
 pyserial>=3.5
 pytest>=8.0
+paramiko>=3.4           # SSH into pi
