@@ -42,6 +42,7 @@ class EnvConfig:
     # conditions. Everything below is redrawn for each flight unless it is pinned, so a
     # policy has to learn to fly rather than memorise one map.
     start_speed: float = 200.0
+    wind_min: float = 0.0             # m/s, only raised to test situations it did not train in
     wind_max: float = 25.0            # m/s, constant per flight, never observed
     randomize: bool = True
     anchor_lat: float = 45.0          # used when randomize is off
@@ -135,7 +136,7 @@ class FlightEnv:
         heading = float(np.arctan2(to_first[0], to_first[1]) + np.radians(self.rng.normal(0, 15)))
         v = c.start_speed + self.rng.normal(0, 10.0)
         wdir = self.rng.uniform(0, 2 * np.pi)
-        wspd = self.rng.uniform(0, c.wind_max)
+        wspd = self.rng.uniform(c.wind_min, c.wind_max)
         self.wind = np.array([wspd * np.sin(wdir), wspd * np.cos(wdir), 0.0])
 
         self.state = dyn.State(pos=start, airspeed=v, heading=heading,

@@ -1,9 +1,10 @@
 <script>
-  // RL Autopilot: replay a flight flown by the PPO agent in flightsim/.
+  // RL Autopilot: watch the PPO agent from flightsim/ fly.
   //
   // The agent never saw a GPS fix or the true state - it flew on the navigation filter's
-  // output, which comes from the IMU, the ground towers and Iridium Doppler. This page
-  // just plays the recording back.
+  // output, which comes from the IMU, the ground towers and Iridium Doppler. The server
+  // flies the trained policy on demand in the situation you pick (flightsim/live.py) and
+  // this page plays the result; saved recordings still work when no policy is available.
   import { Canvas } from '@threlte/core';
   import { ACESFilmicToneMapping } from 'three';
   import { untrack } from 'svelte';
@@ -43,7 +44,79 @@
     }
   }
 
+  // Flying it live
+  let scenarios = $state([]);
+  let policies = $state([]);
+  let policy = $state('');
+  let scenario = $state('standard');
+  let liveBusy = $state(false);
+  let liveError = $state('');
+  let batches = $state({});    // scenario key -> results of several flights
+  let batchSize = $state(8);
+  let testing = $state(false);
+  let tested = $state(0);
+  let ticket = 0;              // only the newest request may change the flight on screen
+
+  async function flyLive(key = scenario, seed = undefined) {
+    const me = ++ticket;
+    scenario = key;
+    liveBusy = true;
+    liveError = '';
+    try {
+      const got = await api.flightLive({ policy, scenario: key, seed });
+      if (me !== ticket) return;
+      flight = got;
+      frame = 0;
+      seek++;
+      playing = true;
+      error = '';
+    } catch (e) {
+      if (me === ticket) liveError = e.message;
+    } finally {
+      if (me === ticket) liveBusy = false;
+    }
+  }
+
+  async function testAll() {
+    testing = true;
+    tested = 0;
+    batches = {};
+    liveError = '';
+    const seed = Math.floor(Math.random() * 1e6);  // every situation gets the same seeds
+    try {
+      for (const s of scenarios) {
+        const res = await api.flightBatch({ policy, scenario: s.key, flights: batchSize, seed });
+        batches = { ...batches, [s.key]: res };
+        tested++;
+      }
+    } catch (e) {
+      liveError = e.message;
+    } finally {
+      testing = false;
+    }
+  }
+
+  function changePolicy() {
+    batches = {};
+    flyLive();
+  }
+
+  async function start() {
+    try {
+      const got = await api.flightScenarios();
+      scenarios = got.scenarios;
+      policies = got.policies;
+      policy = got.policies[0] ?? '';
+    } catch (e) {
+      liveError = e.message;
+    }
+    if (policy) await flyLive();
+    if (!flight) await load();    // nothing to fly: fall back to the saved recording
+  }
+
   async function load(n = name) {
+    ticket++;
+    liveBusy = false;
     busy = true;
     error = '';
     try {
@@ -59,9 +132,14 @@
       busy = false;
     }
   }
-  load();
+  start();
 
-  let frames = $derived(flight?.frames ?? []);
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const runHint = (r) =>
+    `Seed ${r.seed}: ${r.outcome}, ${r.captured} of ${r.waypoints} waypoints in ${r.seconds.toFixed(0)} s, ` +
+    `altitude ±${Math.round(r.alt_error)} m, nav error ${Math.round(r.nav_error)} m. Click to watch it.`;
+
+  let frames =$derived(flight?.frames ?? []);
   let f = $derived(Math.min(Math.max(Math.round(frame) || 0, 0), Math.max(frames.length - 1, 0)));
   let now = $derived(frames[f]);
 
@@ -106,8 +184,8 @@
   };
   const SUMMARY = [
     { k: 'Waypoints', why: 'Gates passed within 1.5 km, judged on the true position.',
-      v: (f) => `${f.summary.captured} of ${f.route.length}${f.summary.crashed ? ' · crashed' : ''}` },
-    { k: 'Flight time', why: 'Length of the recording. Flights are cut off at 300 s.',
+      v: (f) => `${f.summary.captured} of ${f.route.length} · ${f.summary.outcome ?? (f.summary.crashed ? 'crashed' : 'flown')}` },
+    { k: 'Flight time', why: 'How long the flight lasted, up to its time limit.',
       v: (f, fr) => `${((fr.length - 1) * f.dt).toFixed(0)} s` },
     { k: 'Altitude hold', why: 'Mean distance from the 9,000 m target, measured on the truth. Partly the agent flying badly and partly its altimeter being wrong.',
       v: (f) => `±${Math.round(f.summary.alt_error)} m mean` },
@@ -115,7 +193,7 @@
       v: (f) => `${Math.round(f.summary.nav_error)} m mean` },
     { k: 'Wind', why: 'Constant for the flight, drawn at random, and never put into the observation. The agent can only infer it from ground speed differing from airspeed.',
       v: (f) => `${Math.hypot(f.wind[0], f.wind[1]).toFixed(0)} m/s, unseen` },
-    { k: 'Towers', why: 'How many ground stations this map happened to get - between 1 and 5, scattered at random.',
+    { k: 'Towers', why: 'How many ground stations this map got, scattered at random.',
       v: (f) => `${f.towers.length} on this map` },
     { k: 'Position', why: 'Where on Earth this flight took place, drawn per episode. Latitude changes how many Iridium satellites are overhead.',
       v: (f) => `${f.anchor[0].toFixed(1)}°, ${f.anchor[1].toFixed(1)}°` },
@@ -136,10 +214,15 @@
   <section class="view">
     {#if flight}
       <Canvas toneMapping={ACESFilmicToneMapping}>
-        <FlightScene {flight} {frame} {camera} {showEstimate} {showSensors} />
+        {#key flight}
+          <FlightScene {flight} {frame} {camera} {showEstimate} {showSensors} />
+        {/key}
       </Canvas>
 
       <div class="toolbar">
+        <span class="source" class:live={flight.live}>
+          {#if liveBusy}Flying…{:else if flight.live}Live · {flight.scenario.title} · seed {flight.seed}{:else}Recording{/if}
+        </span>
         <div class="seg" role="group" aria-label="Camera">
           <button class:on={camera === 'chase'} onclick={() => (camera = 'chase')}>Chase</button>
           <button class:on={camera === 'free'} onclick={() => (camera = 'free')}>Free</button>
@@ -197,7 +280,7 @@
         </select>
       </div>
     {:else}
-      <p class="loading">{busy ? 'Loading the flight…' : error ? '' : 'No flight loaded.'}</p>
+      <p class="loading">{liveBusy ? 'Flying the model…' : busy ? 'Loading the flight…' : error ? '' : 'No flight loaded.'}</p>
     {/if}
     {#if error}
       <div class="error" role="alert"><b>{error}</b><span>{hint}</span></div>
@@ -217,6 +300,67 @@
         <li><i class="ln" style:background="#db6d28"></i>where it thought it was</li>
         <li><i class="ln" style:background="#8b949e"></i>the planned route</li>
       </ul>
+    </section>
+
+    <section>
+      <h2>Fly it live</h2>
+      {#if policy}
+        <p class="note first">
+          Pick a situation and the trained network flies a brand-new map. Situations marked <b class="new">new</b> are outside anything it trained on.
+        </p>
+        {#if policies.length > 1}
+          <select class="policy" bind:value={policy} onchange={changePolicy} aria-label="Policy to fly">
+            {#each policies as p}<option value={p}>{p}</option>{/each}
+          </select>
+        {/if}
+        <div class="scen">
+          {#if Object.keys(batches).length}
+            <div class="scen-head"><span></span><span>Routes</span><span>Crashes</span></div>
+          {/if}
+          {#each scenarios as s (s.key)}
+            {@const r = batches[s.key]}
+            <button class="scen-row" class:on={scenario === s.key} onclick={() => flyLive(s.key)} use:tip={s.blurb}>
+              <span>{s.title}{#if !s.trained}<b class="new">new</b>{/if}</span>
+              <span class="mono" class:good={r && r.stats.completed >= 0.9} class:poor={r && r.stats.completed < 0.6}>{r ? pct(r.stats.completed) : ''}</span>
+              <span class="mono" class:poor={r && r.stats.crashed > 0}>{r ? pct(r.stats.crashed) : ''}</span>
+            </button>
+          {/each}
+        </div>
+        <button class="primary wide" onclick={() => flyLive()} disabled={liveBusy}>{liveBusy ? 'Flying…' : 'Fly a new flight'}</button>
+        <div class="test">
+          <button onclick={testAll} disabled={testing}>
+            {testing ? `Testing ${tested + 1} of ${scenarios.length}…` : 'Test every situation'}
+          </button>
+          <select bind:value={batchSize} disabled={testing} aria-label="Flights per situation">
+            <option value={4}>4 flights each</option>
+            <option value={8}>8 flights each</option>
+            <option value={16}>16 flights each</option>
+          </select>
+        </div>
+        {#if batches[scenario]}
+          {@const b = batches[scenario]}
+          <p class="note">
+            ±{Math.round(b.stats.alt_error)} m altitude, {Math.round(b.stats.nav_error)} m nav error on average. Click a flight to watch it:
+          </p>
+          <div class="runs">
+            {#each b.flights as r (r.seed)}
+              <button
+                class="run mono"
+                class:done={r.route_done}
+                class:crash={r.crashed}
+                class:on={flight?.seed === r.seed && flight?.scenario?.key === scenario}
+                onclick={() => flyLive(scenario, r.seed)}
+                use:tip={runHint(r)}
+              >{r.captured}/{r.waypoints}</button>
+            {/each}
+          </div>
+        {/if}
+      {:else if !liveError}
+        <p class="note first">
+          No trained policy found. In <code>flightsim/</code> run <code>train.py</code>, or <code>fly.py --export</code> if you already have a checkpoint.
+        </p>
+      {/if}
+      {#if liveError}<p class="note bad">{liveError}</p>{/if}
     </section>
 
     {#if flight}
@@ -282,7 +426,7 @@
         {netBusy ? 'Loading…' : 'Watch the network learn'}
       </button>
       {#if netError}<p class="note bad">{netError}</p>{/if}
-      <button class="wide" onclick={() => load(name)} disabled={busy}>{busy ? 'Loading…' : 'Reload flight'}</button>
+      <button class="wide" onclick={() => load(name)} disabled={busy}>{busy ? 'Loading…' : 'Show saved recording'}</button>
     </section>
   </aside>
 </div>
@@ -314,6 +458,101 @@
     gap: 8px;
     align-items: center;
     flex-wrap: wrap;
+  }
+  .source {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .source.live {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
+  .note.first {
+    margin-top: 0;
+  }
+  .new {
+    margin-left: 6px;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--warn);
+    border: 1px solid var(--warn);
+  }
+  .policy {
+    width: 100%;
+    margin-top: 8px;
+    padding: 4px;
+  }
+  .scen {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 8px;
+  }
+  .scen-head,
+  .scen-row {
+    display: grid;
+    grid-template-columns: 1fr 52px 52px;
+    gap: 6px;
+    align-items: center;
+    text-align: left;
+  }
+  .scen-head {
+    padding: 0 9px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .scen-head span:not(:first-child),
+  .scen-row span:not(:first-child) {
+    text-align: right;
+  }
+  .scen-row {
+    width: 100%;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  .scen-row.on {
+    border-color: var(--accent);
+  }
+  .good {
+    color: var(--ok);
+  }
+  .poor {
+    color: var(--bad);
+  }
+  .test {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .test button {
+    flex: 1;
+  }
+  .runs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .run {
+    padding: 2px 7px;
+    font-size: 11px;
+    color: var(--warn);
+  }
+  .run.done {
+    color: var(--ok);
+  }
+  .run.crash {
+    color: var(--bad);
+  }
+  .run.on {
+    border-color: var(--accent);
   }
   .chip {
     display: flex;

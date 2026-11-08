@@ -13,7 +13,9 @@ import argparse
 import asyncio
 import json
 import logging
+import secrets
 import statistics
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -114,6 +116,18 @@ class FusionIn(LeoIn):
     beacon_spacing_km: float = Field(70.0, ge=1.0, le=500.0)      # offset from the route
     beacon_range_sigma_m: float = Field(30.0, gt=0.0, le=5000.0)  # ranging noise
     beacon_max_range_km: float = Field(250.0, ge=10.0, le=2000.0)
+
+
+class FlightIn(BaseModel):
+    """Fly the RL policy in one situation (POST /api/flight/live)."""
+
+    scenario: str = "standard"
+    policy: str | None = None                          # None = the first one available
+    seed: int | None = Field(None, ge=0, le=2**31 - 1)  # None = a new flight each time
+
+
+class FlightBatchIn(FlightIn):
+    flights: int = Field(8, ge=1, le=32)
 
 
 # ---- data source ----------------------------------------------------------------------
@@ -422,6 +436,63 @@ def flight_replay(name: str = "fused"):
     if not path.exists():
         raise HTTPException(404, f"no replay called {name}; run `python fly.py` in flightsim/ first")
     return json.loads(path.read_text())
+
+
+# ---- RL autopilot, flown live: the real policy in a situation you pick (flightsim/live.py) ----
+def _live():
+    """Import flightsim on first use: the other pages still work without it."""
+    flightsim = str(FLIGHT_DIR.parent)
+    if flightsim not in sys.path:
+        sys.path.insert(0, flightsim)
+    try:
+        import live
+    except ImportError as e:
+        raise HTTPException(500, f"missing package for live flights ({e}); "
+                                 "run: pip install -r requirements.txt")
+    return live
+
+
+def _flight_args(live, body: FlightIn) -> tuple[str, int]:
+    """Check a request against what exists. Returns (policy name, seed)."""
+    if body.scenario not in live.SCENARIOS:
+        raise HTTPException(404, f"no scenario called {body.scenario}")
+    name = body.policy or next(iter(live.policies()), None)
+    if name is None or name not in live.policies():
+        raise HTTPException(404, f"no policy called {name or 'fused'}; run `python fly.py --export` in flightsim/")
+    return name, secrets.randbelow(1_000_000) if body.seed is None else body.seed
+
+
+@app.get("/api/flight/scenarios")
+def flight_scenarios():
+    """The situations the policy can be flown in, and which policies are available."""
+    live = _live()
+    return {"policies": live.policies(),
+            "scenarios": [{"key": k, "title": s["title"], "blurb": s["blurb"], "trained": s["trained"]}
+                          for k, s in live.SCENARIOS.items()]}
+
+
+@app.post("/api/flight/live")
+async def flight_live(body: FlightIn):
+    """Fly the policy once, right now, on a map it has never seen."""
+    live = _live()
+    name, seed = _flight_args(live, body)
+    try:
+        return await asyncio.to_thread(live.fly_one, name, body.scenario, seed)
+    except Exception as e:
+        log.exception("live flight failed")
+        raise HTTPException(500, f"flight failed: {e}")
+
+
+@app.post("/api/flight/batch")
+async def flight_batch(body: FlightBatchIn):
+    """Fly several flights in one situation and report how it did across all of them."""
+    live = _live()
+    name, seed = _flight_args(live, body)
+    try:
+        return await asyncio.to_thread(live.fly_batch, name, body.scenario, body.flights, seed)
+    except Exception as e:
+        log.exception("flight batch failed")
+        raise HTTPException(500, f"flights failed: {e}")
 
 
 # ---- sensor fusion: the same flight with several sensor sets (app/fusion.py) -----------------

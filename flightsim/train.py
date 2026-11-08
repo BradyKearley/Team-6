@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from env import EnvConfig, FlightEnv
+from fly import export_policy
 from ppo import ActorCritic, PPOConfig, RunningNorm, VecEnv, rollout, update
 
 
@@ -126,6 +127,7 @@ def main():
                             "return": ret, "steps": done_steps},
                            os.path.join("runs", f"{name}.pt"))
     save_network_movie(os.path.join("runs", f"{name}.net.json"), snaps, venv.envs[0], a.obs_mode)
+    export_policy(os.path.join("runs", f"{name}.pt"), os.path.join("runs", f"{name}.policy.json"), name)
     print(f"\nbest mean return {best:.1f} -> runs/{name}.pt  ({(time.time()-t0)/60:.1f} min)")
     with open(os.path.join("runs", f"{name}.json"), "w") as f:
         json.dump({"obs_mode": a.obs_mode, "towers": a.towers, "steps": a.steps,
