@@ -88,12 +88,10 @@ try:
                 # 5. Solve using the filtered points
                 top_stars = detected_stars[:25] if len(detected_stars) > 25 else detected_stars
                 # 5. Test a tight bracket of FOV values around 7.4°
-                # Test with relaxed distance tolerance to handle monitor pixel-grid geometry
                 result = t3.solve_from_centroids(
                     top_stars, 
                     fov_estimate=7.4, 
                     size=cleaned_image.size,
-                    match_radius=0.02  # Loosen geometric tolerance for screen rendering
                 )
                 # Convert celestial orientation to geographic position
                 lat, lon = None, None
