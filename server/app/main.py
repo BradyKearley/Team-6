@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import secrets
 import statistics
+import sys
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal
 
@@ -33,6 +36,7 @@ from .towers import Tower, TowerStore
 
 log = logging.getLogger("server")
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+FLIGHT_DIR = Path(__file__).resolve().parents[2] / "flightsim" / "runs"  # replays from fly.py
 
 # ---- shared state (one server = one of each) --------------------------------------
 real_towers = TowerStore()  # your real layout, saved in towers.json
@@ -77,6 +81,53 @@ class SimIn(BaseModel):
 class SourceIn(BaseModel):
     kind: Literal["sim", "serial", "ble"]
     port: str | None = None  # serial only; None = auto-detect
+
+
+class LeoIn(BaseModel):
+    """Knobs for the LEO Doppler simulation (POST /api/leo/simulate).
+
+    Everything is optional: anything left out keeps its SimConfig default.
+    Limits here just keep one browser request from pinning the server for minutes.
+    """
+
+    minutes: float = Field(20.0, gt=0.2, le=120.0)
+    dt: float = Field(1.0, ge=0.25, le=10.0)
+    min_elev_deg: float = Field(10.0, ge=0.0, lt=89.0)
+    speed: float = Field(250.0, ge=0.0, le=1000.0)          # m/s
+    alt_m: float = Field(10_000.0, ge=0.0, le=20_000.0)
+    start_lat: float = Field(45.0, ge=-85.0, le=85.0)
+    start_lon: float = Field(-60.0, ge=-180.0, le=180.0)
+    heading_deg: float = Field(50.0, ge=0.0, le=360.0)
+    turn_start_s: float = Field(400.0, ge=0.0)
+    turn_rate_deg_s: float = Field(3.0, ge=0.0, le=20.0)
+    turn_total_deg: float = Field(90.0, ge=0.0, le=360.0)
+    accel_noise: float = Field(0.005, ge=0.0, le=1.0)       # m/s^2
+    doppler_sigma_hz: float = Field(5.0, gt=0.0, le=500.0)
+    clock_rw_hz_rts: float = Field(0.2, ge=0.0, le=50.0)
+    orbit_err_m: float = Field(0.0, ge=0.0, le=20_000.0)
+    seed: int = Field(42, ge=0, le=2**31 - 1)
+    refresh_tle: bool = False                               # re-download the elements first
+
+
+class FusionIn(LeoIn):
+    """The same flight, plus the ground beacon network (POST /api/fusion/simulate)."""
+
+    beacon_count: int = Field(4, ge=0, le=12)
+    beacon_spacing_km: float = Field(70.0, ge=1.0, le=500.0)      # offset from the route
+    beacon_range_sigma_m: float = Field(30.0, gt=0.0, le=5000.0)  # ranging noise
+    beacon_max_range_km: float = Field(250.0, ge=10.0, le=2000.0)
+
+
+class FlightIn(BaseModel):
+    """Fly the RL policy in one situation (POST /api/flight/live)."""
+
+    scenario: str = "standard"
+    policy: str | None = None                          # None = the first one available
+    seed: int | None = Field(None, ge=0, le=2**31 - 1)  # None = a new flight each time
+
+
+class FlightBatchIn(FlightIn):
+    flights: int = Field(8, ge=1, le=32)
 
 
 # ---- data source ----------------------------------------------------------------------
@@ -320,6 +371,151 @@ async def measure(body: SecondsIn):
             dist = (towers.get(n) or Tower(n)).rssi_to_distance(rssi)
             out.append({"name": n, "known": known, "heard": True, "rssi": rssi, "distance": dist, "samples": count})
     return {"towers": out}
+
+
+# ---- LEO satellite Doppler navigation (app/leo_sat.py) --------------------------------------
+def _leo():
+    """Import leo_sat on first use: the tower pages still work without skyfield installed."""
+    try:
+        from . import leo_sat
+    except ImportError as e:
+        raise HTTPException(500, f"missing package for the LEO page ({e}); "
+                                 "run: pip install -r requirements.txt")
+    return leo_sat
+
+
+@app.get("/api/leo/info")
+async def leo_info(refresh: bool = False):
+    """Which Iridium elements we have (count, epoch, how old). Downloads them if missing."""
+    leo = _leo()
+    try:
+        return {"tle": await asyncio.to_thread(leo.tle_status, refresh),
+                "defaults": asdict(leo.SimConfig())}
+    except Exception as e:
+        raise HTTPException(503, f"no orbit data: {e}")
+
+
+@app.post("/api/leo/simulate")
+async def leo_simulate(body: LeoIn):
+    """Run one GPS-outage simulation: IMU-only dead reckoning vs IMU + Iridium Doppler EKF.
+
+    CPU-bound (a second or two), so it runs in a worker thread and the websocket keeps flowing.
+    """
+    leo = _leo()
+    cfg = replace(leo.SimConfig(), **body.model_dump(exclude={"refresh_tle"}))
+    try:
+        res = await asyncio.to_thread(leo.simulate, cfg, None, body.refresh_tle)
+    except Exception as e:
+        log.exception("LEO simulation failed")
+        raise HTTPException(500, f"simulation failed: {e}")
+    return await asyncio.to_thread(res.to_json)
+
+
+# ---- RL autopilot replays (written by flightsim/fly.py) --------------------------------------
+@app.get("/api/flight/list")
+def flight_list():
+    """Which recorded flights are available to replay."""
+    if not FLIGHT_DIR.exists():
+        return {"flights": []}
+    return {"flights": sorted(p.name[: -len(".flight.json")] for p in FLIGHT_DIR.glob("*.flight.json"))}
+
+
+@app.get("/api/flight/network")
+def flight_network(name: str = "fused"):
+    """The policy's weights as they changed over training, written by flightsim/train.py."""
+    path = FLIGHT_DIR / f"{Path(name).name}.net.json"
+    if not path.exists():
+        raise HTTPException(404, f"no network movie for {name}; train it again to record one")
+    return json.loads(path.read_text())
+
+
+@app.get("/api/flight/replay")
+def flight_replay(name: str = "fused"):
+    """One flight recorded by `python fly.py` in flightsim/ - the UI plays it back in 3D."""
+    path = FLIGHT_DIR / f"{Path(name).name}.flight.json"   # .name: no climbing out of the folder
+    if not path.exists():
+        raise HTTPException(404, f"no replay called {name}; run `python fly.py` in flightsim/ first")
+    return json.loads(path.read_text())
+
+
+# ---- RL autopilot, flown live: the real policy in a situation you pick (flightsim/live.py) ----
+def _live():
+    """Import flightsim on first use: the other pages still work without it."""
+    flightsim = str(FLIGHT_DIR.parent)
+    if flightsim not in sys.path:
+        sys.path.insert(0, flightsim)
+    try:
+        import live
+    except ImportError as e:
+        raise HTTPException(500, f"missing package for live flights ({e}); "
+                                 "run: pip install -r requirements.txt")
+    return live
+
+
+def _flight_args(live, body: FlightIn) -> tuple[str, int]:
+    """Check a request against what exists. Returns (policy name, seed)."""
+    if body.scenario not in live.SCENARIOS:
+        raise HTTPException(404, f"no scenario called {body.scenario}")
+    name = body.policy or next(iter(live.policies()), None)
+    if name is None or name not in live.policies():
+        raise HTTPException(404, f"no policy called {name or 'fused'}; run `python fly.py --export` in flightsim/")
+    return name, secrets.randbelow(1_000_000) if body.seed is None else body.seed
+
+
+@app.get("/api/flight/scenarios")
+def flight_scenarios():
+    """The situations the policy can be flown in, and which policies are available."""
+    live = _live()
+    return {"policies": live.policies(),
+            "scenarios": [{"key": k, "title": s["title"], "blurb": s["blurb"], "trained": s["trained"]}
+                          for k, s in live.SCENARIOS.items()]}
+
+
+@app.post("/api/flight/live")
+async def flight_live(body: FlightIn):
+    """Fly the policy once, right now, on a map it has never seen."""
+    live = _live()
+    name, seed = _flight_args(live, body)
+    try:
+        return await asyncio.to_thread(live.fly_one, name, body.scenario, seed)
+    except Exception as e:
+        log.exception("live flight failed")
+        raise HTTPException(500, f"flight failed: {e}")
+
+
+@app.post("/api/flight/batch")
+async def flight_batch(body: FlightBatchIn):
+    """Fly several flights in one situation and report how it did across all of them."""
+    live = _live()
+    name, seed = _flight_args(live, body)
+    try:
+        return await asyncio.to_thread(live.fly_batch, name, body.scenario, body.flights, seed)
+    except Exception as e:
+        log.exception("flight batch failed")
+        raise HTTPException(500, f"flights failed: {e}")
+
+
+# ---- sensor fusion: the same flight with several sensor sets (app/fusion.py) -----------------
+def _fusion():
+    try:
+        from . import fusion
+    except ImportError as e:
+        raise HTTPException(500, f"missing package for the fusion page ({e}); "
+                                 "run: pip install -r requirements.txt")
+    return fusion
+
+
+@app.post("/api/fusion/simulate")
+async def fusion_simulate(body: FusionIn):
+    """Run one truth flight through four filters: IMU alone, +Doppler, +beacons, +both."""
+    fus = _fusion()
+    cfg = replace(fus.FusionConfig(), **body.model_dump(exclude={"refresh_tle"}))
+    try:
+        res = await asyncio.to_thread(fus.simulate, cfg, None, body.refresh_tle)
+    except Exception as e:
+        log.exception("fusion simulation failed")
+        raise HTTPException(500, f"simulation failed: {e}")
+    return await asyncio.to_thread(res.to_json)
 
 
 # ---- data source + simulator ----------------------------------------------------------------

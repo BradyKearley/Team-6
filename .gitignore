@@ -11,3 +11,12 @@ frontend/dist/
 # PlatformIO
 .pio/
 .vscode/
+
+# LEO satellite sim (app/leo_sat.py): downloaded orbit data + CLI output
+server/app/iridium_next.tle
+server/estimated_track.csv
+server/iridium_doppler_ekf_results.png
+
+# Flight sim (PyTorch RL): venv and training checkpoints
+flightsim/.venv/
+flightsim/runs/*.pt

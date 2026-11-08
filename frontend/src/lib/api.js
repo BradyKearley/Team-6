@@ -35,4 +35,16 @@ export const api = {
   sweepUndo: () => req('DELETE', '/api/sweep/last'),
   sweepClear: () => req('DELETE', '/api/sweep'),
   sweepApply: () => req('POST', '/api/sweep/apply'),
+  // LEO satellite Doppler simulation (server/app/leo_sat.py)
+  leoInfo: (refresh = false) => req('GET', `/api/leo/info${refresh ? '?refresh=true' : ''}`),
+  leoSimulate: (params) => req('POST', '/api/leo/simulate', params),
+  fusionSimulate: (params) => req('POST', '/api/fusion/simulate', params),
+  // RL autopilot replays, recorded by flightsim/fly.py
+  flightList: () => req('GET', '/api/flight/list'),
+  flightReplay: (name = 'fused') => req('GET', `/api/flight/replay?name=${encodeURIComponent(name)}`),
+  flightNetwork: (name = 'fused') => req('GET', `/api/flight/network?name=${encodeURIComponent(name)}`),
+  // the same policy flown live by the server (flightsim/live.py)
+  flightScenarios: () => req('GET', '/api/flight/scenarios'),
+  flightLive: (params) => req('POST', '/api/flight/live', params),
+  flightBatch: (params) => req('POST', '/api/flight/batch', params),
 };

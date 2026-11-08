@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+imu_calib.json
+imu_log_*.csv

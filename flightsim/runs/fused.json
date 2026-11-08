@@ -1,0 +1,7 @@
+{
+ "obs_mode": "fused",
+ "towers": 4,
+ "steps": 900000,
+ "best_return": 17.63463374292447,
+ "minutes": 7.9947534958521524
+}
