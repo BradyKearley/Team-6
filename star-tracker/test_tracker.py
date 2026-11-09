@@ -7,6 +7,11 @@ import math
 import requests
 import io
 import numpy as np
+import csv
+
+last_lock = None
+log_file = "lock_log.csv"
+
 
 #from picamera2 import Picamera2
 PI_IP = "172.20.10.5"
@@ -25,38 +30,47 @@ def calculate_lat_long(ra, dec, timestamp):
 
 
     # Longitude is the difference between sidereal time and right ascension
-    longitude = gmst - ra
+    longitude = ra - gmst
     while longitude > 180:
         longitude -= 360
     while longitude < -180:
         longitude += 360
     return latitude, longitude
 
+if not os.path.exists(log_file):
+    with open(log_file, "w", newline="") as f:
+        csv.writer(f).writerow(["utc_time", "ra", "dec", "roll", "fov", "matches", "lat", "lon"])
 
-def render_hud(result, lat, lon):
+
+def render_hud(result, lat, lon, last_lock):
     os.system('cls' if os.name == 'nt' else 'clear')
     print("=========================================")
     print("           AIRCRAFT STAR NAV             ")
     print("=========================================")
     if result and result.get('RA') is not None:
         print(f" [STATUS] LOCK ACQUIRED ({result['Matches']} star matches)")
-        print(f" -------------------------------------")
-        print(f"  Right Acension (RA) : {float(result['RA']):.2f}°")
-        print(f"  Declination (Dec)    : {float(result['Dec']):.2f}°")
-        print(f"  Aircraft Bank (Roll) : {float(result['Roll']):.2f}°")
-        print(f"  Field of View (FOV)  : {float(result['FOV']):.2f}°")
-        print(f"  Solution Time        : {float(result['T_solve']):.2f}s")
-        print("=========================================")
-        print(f"  Latitude : {float(lat):.6f}")
-        print(f"  Longitude : {float(lon):.6f}")
     else:
         print(" [STATUS] SEARCHING SKY... NO LOCK")
+    print("=========================================")
+    if last_lock:
+        age = (datetime.now(timezone.utc) - last_lock['time']).total_seconds()
+        print(f" LAST LOCK ({age:.1f}s ago)")
+        print(f"  RA   : {last_lock['ra']:.2f}°")
+        print(f"  Dec  : {last_lock['dec']:.2f}°")
+        print(f"  Roll : {last_lock['roll']:.2f}°")
+        print(f"  FOV  : {last_lock['fov']:.2f}°")
+        print(f"  Matches : {last_lock['matches']}")
+        print(f"  Latitude  : {last_lock['lat']:.6f}")
+        print(f"  Longitude : {last_lock['lon']:.6f}")
+    else:
+        print(" No lock yet")
     print("=========================================")
 
 
 # Initialize Tetra3 star tracker solver
 t3 = tetra3.Tetra3()
 print("Tetra3 initialized. Connecting to Pi camera...")
+
 
 try:
     while True:
@@ -67,37 +81,35 @@ try:
             if response.status_code ==200:
                 image_stream = io.BytesIO(response.content)
                 image = Image.open(image_stream).convert('L')
+
+                w, h = image.size
+                roi = (int(w*0.22), int(h*0.43), int(w*0.92), int(h*0.96))  # sky only, below toolbar
+                crop = image.crop(roi)
+                arr = np.array(crop)
+                crop.save("debug_crop.png")
+
+                cents = tetra3.get_centroids_from_image(arr, sigma=3, min_area=3,
+                                                        max_area=200, max_returned=25)
+                print("centroids:", len(cents))
+                if len(cents) >= 4:
+                    result = t3.solve_from_centroids(cents, size=arr.shape[:2])  # (height, width)
+                else:
+                    result = {'RA': None}
                 
-                # 1. Rotate 180° to correct for physical lens inversion
-                image = image.rotate(180)
-                
-                # 2. Crop out the dark physical tube borders
-                width, height = image.size
-                crop_box = (width * 0.25, height * 0.25, width * 0.75, height * 0.75)
-                cropped_image = image.crop(crop_box)
-                
-                # 3. Apply higher threshold to strip out monitor background glow
-                threshold_val = 190
-                cleaned_image = cropped_image.point(lambda p: 255 if p > threshold_val else 0)
-                
-                # 4. Extract centroids and check the new count
-                detected_stars = tetra3.get_centroids_from_image(cleaned_image)
-                detected_stars = np.array(detected_stars)
-                print(f"Cleaned centroids count with threshold 190: {len(detected_stars)}")
-                
-                # 5. Solve using the filtered points
-                top_stars = detected_stars[:25] if len(detected_stars) > 25 else detected_stars
-                # 5. Test a tight bracket of FOV values around 7.4°
-                result = t3.solve_from_centroids(
-                    top_stars, 
-                    fov_estimate=7.4, 
-                    size=cleaned_image.size,
-                )
                 # Convert celestial orientation to geographic position
                 lat, lon = None, None
                 if result.get('RA') is not None:
                     lat, lon = calculate_lat_long(float(result['RA']), float(result['Dec']), capture_time)
-                render_hud(result, lat, lon)
+                    last_lock = {
+                        'time': capture_time, 'ra': float(result['RA']), 'dec': float(result['Dec']),
+                        'roll': float(result['Roll']), 'fov': float(result['FOV']),
+                        'matches': result['Matches'], 'lat': lat, 'lon': lon,
+                    }
+                    with open(log_file, "a", newline="") as f:
+                        csv.writer(f).writerow([capture_time.isoformat(), last_lock['ra'], last_lock['dec'],
+                                                last_lock['roll'], last_lock['fov'], last_lock['matches'], lat, lon])
+
+                render_hud(result, lat, lon, last_lock)
             else:
                 print(" [ERROR] Failed to fetch frame from Pi.")
 
