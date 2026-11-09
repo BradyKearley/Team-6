@@ -7,3 +7,5 @@ bleak>=0.22
 pyserial>=3.5
 pytest>=8.0
 paramiko>=3.4           # SSH into pi
+Pillow>=10.0            # Star camera page: reads the uploaded photo (app/star_camera.py)
+python-multipart>=0.0.9 # Star camera page: the photo upload (POST /api/star/solve)
