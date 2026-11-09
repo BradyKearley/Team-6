@@ -16,6 +16,22 @@ async function req(method, path, body) {
   return res.json();
 }
 
+// Multipart, for the one endpoint that takes a file (the star camera photo upload).
+async function upload(path, file, fields = {}) {
+  const body = new FormData();
+  body.append('file', file);
+  for (const [k, v] of Object.entries(fields)) if (v != null && v !== '') body.append(k, String(v));
+  const res = await fetch(path, { method: 'POST', body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {}
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+  return res.json();
+}
+
 export const api = {
   towers: () => req('GET', '/api/towers'),
   createTower: (t) => req('POST', '/api/towers', t),
@@ -39,6 +55,14 @@ export const api = {
   leoInfo: (refresh = false) => req('GET', `/api/leo/info${refresh ? '?refresh=true' : ''}`),
   leoSimulate: (params) => req('POST', '/api/leo/simulate', params),
   fusionSimulate: (params) => req('POST', '/api/fusion/simulate', params),
+  // Star camera: a photo of the night sky -> lat/lon (server/app/star_camera.py)
+  starInfo: () => req('GET', '/api/star/info'),
+  starSampleUrl: (key) => `/api/star/sample/${encodeURIComponent(key)}`,
+  starSolveSample: (key, opt = {}) => req('POST', '/api/star/sample', { key, ...opt }),
+  starSolveUpload: (file, fields = {}) => upload('/api/star/solve', file, fields),
+  starCapture: (opt = {}) => req('POST', '/api/star/capture', opt),
+  starCamera: () => req('GET', '/api/star/camera'),
+  setStarCamera: (cfg) => req('POST', '/api/star/camera', cfg),
   // RL autopilot replays, recorded by flightsim/fly.py
   flightList: () => req('GET', '/api/flight/list'),
   flightReplay: (name = 'fused') => req('GET', `/api/flight/replay?name=${encodeURIComponent(name)}`),

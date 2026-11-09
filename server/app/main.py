@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,6 +37,7 @@ from .towers import Tower, TowerStore
 log = logging.getLogger("server")
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 FLIGHT_DIR = Path(__file__).resolve().parents[2] / "flightsim" / "runs"  # replays from fly.py
+MAX_UPLOAD = 25_000_000  # star camera photo size cap [bytes]
 
 # ---- shared state (one server = one of each) --------------------------------------
 real_towers = TowerStore()  # your real layout, saved in towers.json
@@ -116,6 +117,45 @@ class FusionIn(LeoIn):
     beacon_spacing_km: float = Field(70.0, ge=1.0, le=500.0)      # offset from the route
     beacon_range_sigma_m: float = Field(30.0, gt=0.0, le=5000.0)  # ranging noise
     beacon_max_range_km: float = Field(250.0, ge=10.0, le=2000.0)
+
+
+class StarOptIn(BaseModel):
+    """Solver knobs for the star camera (see SolveOptions in app/star_camera.py).
+
+    Anything left out keeps the default for that source - a stock sample's own settings,
+    or the Pi camera's preprocessing.
+    """
+
+    fov_estimate: float | None = Field(None, gt=0.5, le=180.0)   # deg across the frame
+    fov_max_error: float | None = Field(None, gt=0.0, le=90.0)
+    rotate180: bool | None = None
+    crop: float | None = Field(None, ge=0.1, le=1.0)
+    threshold: int | None = Field(None, ge=0, le=254)
+    max_stars: int | None = Field(None, ge=4, le=20)
+    search_distortion: bool | None = None
+
+    def options(self, base: dict | None = None):
+        """Merge what the browser sent over whatever defaults this source has.
+
+        Only the fields declared here, so subclasses can carry extras (StarSampleIn's
+        `key`) without them reaching SolveOptions.
+        """
+        star = _star()
+        given = {k: v for k, v in self.model_dump(include=set(StarOptIn.model_fields)).items()
+                 if v is not None}
+        return star.SolveOptions(**{**(base or {}), **given})
+
+
+class StarSampleIn(StarOptIn):
+    key: str = Field(min_length=1, max_length=40)
+
+
+class CameraIn(BaseModel):
+    """Where the Raspberry Pi star camera is (POST /api/star/camera)."""
+
+    url: str | None = Field(None, max_length=300)   # e.g. http://172.20.10.5:5000/frame
+    timeout_s: float | None = Field(None, gt=0.2, le=30.0)
+    enabled: bool | None = None
 
 
 class FlightIn(BaseModel):
@@ -516,6 +556,114 @@ async def fusion_simulate(body: FusionIn):
         log.exception("fusion simulation failed")
         raise HTTPException(500, f"simulation failed: {e}")
     return await asyncio.to_thread(res.to_json)
+
+
+# ---- star camera: a photo of the sky -> lat/lon (app/star_camera.py) -------------------------
+def _star():
+    """Import star_camera on first use: the other pages still work without Pillow/tetra3."""
+    try:
+        from . import star_camera
+    except ImportError as e:
+        raise HTTPException(500, f"missing package for the star camera page ({e}); "
+                                 "run: pip install -r requirements.txt")
+    return star_camera
+
+
+def _star_call(fn, *args, **kwargs):
+    """Run one solver call, turning its errors into something the page can act on.
+
+    A StarCameraError is the caller's problem (unreadable image, no such sample, Pi not
+    reachable), so it comes back as a 409 with its own message; anything else is ours and
+    is logged. Routes wrap this in `asyncio.to_thread` because solving is CPU-bound and
+    the first call loads a 49 MB pattern database - the live websocket keeps flowing.
+    """
+    star = _star()
+    try:
+        return fn(*args, **kwargs)
+    except star.StarCameraError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        log.exception("star camera solve failed")
+        raise HTTPException(500, f"solve failed: {e}")
+
+
+@app.get("/api/star/info")
+async def star_info():
+    """The pattern database, the stock images, and where the Pi camera is pointed."""
+    star = _star()
+    return await asyncio.to_thread(_star_call, star.info)
+
+
+@app.get("/api/star/sample/{key}")
+async def star_sample_image(key: str):
+    """One stock image as a PNG - the page shows it and can re-solve it."""
+    star = _star()
+    png = await asyncio.to_thread(_star_call, star.sample_png, key)
+    return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.post("/api/star/sample")
+async def star_solve_sample(body: StarSampleIn):
+    """Solve a stock image, stamped with its own capture time (and known position)."""
+    star = _star()
+    base = star.SAMPLES_BY_KEY[body.key].opt if body.key in star.SAMPLES_BY_KEY else {}
+    return await asyncio.to_thread(_star_call, star.solve_sample, body.key, body.options(base))
+
+
+@app.post("/api/star/solve")
+async def star_solve_upload(
+    file: UploadFile = File(..., description="a photo of the night sky"),
+    captured_at: str | None = Form(None, description="UTC shutter time, ISO-8601 (default: now)"),
+    fov_estimate: float | None = Form(None),
+    fov_max_error: float | None = Form(None),
+    rotate180: bool = Form(False),
+    crop: float = Form(1.0),
+    threshold: int | None = Form(None),
+    max_stars: int = Form(8),
+    search_distortion: bool = Form(True),
+):
+    """Solve an uploaded photo.
+
+    `captured_at` is what sets the longitude - the latitude comes out of the picture alone,
+    but the Earth has to be put back where it was when the shutter opened.
+    """
+    star = _star()
+    data = await file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, f"image is over {MAX_UPLOAD // 1_000_000} MB")
+    if not data:
+        raise HTTPException(400, "no image in the request")
+    opt = star.SolveOptions(
+        fov_estimate=fov_estimate, fov_max_error=fov_max_error, rotate180=rotate180,
+        crop=crop, threshold=threshold, max_stars=max_stars, search_distortion=search_distortion,
+    )
+    when = _star_call(star.parse_time, captured_at)
+    return await asyncio.to_thread(_star_call, star.solve_image, data, when, opt)
+
+
+@app.post("/api/star/capture")
+async def star_capture(body: StarOptIn):
+    """Grab a frame off the Raspberry Pi star camera and solve it.
+
+    The Pi runs `star-tracker/camera.py` (Flask + Picamera2, GET /frame returns a JPEG).
+    Until one is reachable this answers 409 with what to do about it; the page keeps the
+    button and shows the message.
+    """
+    star = _star()
+    base = {"rotate180": True, "crop": 0.5, "threshold": 190}  # what that optical tube needs
+    return await asyncio.to_thread(_star_call, star.solve_capture, body.options(base))
+
+
+@app.get("/api/star/camera")
+def star_camera_get():
+    return _star().camera_info()
+
+
+@app.post("/api/star/camera")
+def star_camera_set(body: CameraIn):
+    """Point the server at the Pi camera (host:port of its /frame endpoint)."""
+    star = _star()
+    return _star_call(star.set_camera, body.url, body.timeout_s, body.enabled)
 
 
 # ---- data source + simulator ----------------------------------------------------------------

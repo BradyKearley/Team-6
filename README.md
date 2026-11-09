@@ -17,6 +17,7 @@ Challenge 2.
 | `server/` | FastAPI server: reads the plane, trilaterates, serves the API + WebSocket | below |
 | `frontend/` | Svelte 5 + Threlte 3D UI with a sidebar of tracking methods | below |
 | `flightsim/` | PyTorch PPO agent flying a simulated aeroplane on our sensors alone | [flightsim/README.md](flightsim/README.md) |
+| `star-tracker/` | `camera.py` runs on the Raspberry Pi and serves its camera frames; the solver is `server/app/star_camera.py` | below |
 
 No WiFi network is needed anywhere: towers → plane is ESP-NOW, plane → laptop is Bluetooth LE.
 
@@ -110,6 +111,47 @@ The star camera isn't in the comparison: it measures attitude, and this filter d
 
   `cd server` then `.venv\Scripts\python -m app.fusion --minutes 20` prints the same table in the terminal.
 
+## Star camera page (no hardware needed)
+
+**Star Camera** turns one photo of the night sky into a latitude and longitude on the globe. A camera pointed straight
+up photographs the stars; [`tetra3`](https://github.com/esa/tetra3) matches the pattern against a catalogue and says
+which way the lens was aimed (right ascension and declination). Because it was aimed at the *zenith*, that direction is
+the point directly overhead:
+
+```
+latitude  = declination of the zenith            (no clock needed - this is why a sextant works at sea)
+longitude = right ascension - Greenwich sidereal time at the instant of the shutter
+```
+
+Nothing transmits, so there is nothing to jam - but the longitude is only as good as the clock. The Earth turns
+0.0042° per second, so one second of timing error is about 460 m at the equator. The page shows this: upload a frame
+without a capture time and the latitude comes out right while the longitude lands an ocean away.
+
+Three ways in, all through the same solver in [`server/app/star_camera.py`](server/app/star_camera.py):
+
+1. **Four stock images**, rendered from the same catalogue the solver matches against, each for a position we picked
+   (Boston, the Sahara, the mid-Pacific, Wellington). Because the answer is known, the page reports how far the fix
+   missed by - about 1-3 km, which is roughly one pixel of a 20° frame across 1024 px.
+2. **Two real photographs** that ship with tetra3. Taken on a tripod aimed partway up the sky rather than at the zenith,
+   so the position is not the photographer's - but the solve is a real camera's output, with real noise and distortion.
+3. **Your own photo**, dropped on the globe or picked with the button, with the UTC capture time beside it.
+
+The pane shows the frame and, next to it, what the solver made of it: white dots for stars it detected, green circles
+for the ones it matched to the catalogue, red for the ones it missed. The sidebar carries the fix, the attitude
+(RA/Dec/roll/FOV), and the preprocessing knobs - brightness cut, centre crop and 180° rotation - which exist because
+the Pi's optical tube needs all three.
+
+- The pattern database is the tetra3 checkout in `server/test/`: 8,818 stars, 12.4M patterns, Hipparcos down to
+  magnitude 7. It covers **10-30° fields of view**; a narrower lens (the Pi rig is about 7.4°) needs its own database
+  built with tetra3's `generate_database()`, and the page says so when a solve lands outside that range.
+- Same file runs standalone: `cd server` then `.venv\Scripts\python -m app.star_camera --all` solves every stock image
+  in the terminal, or `--image photo.jpg --at 2026-03-21T06:00:00Z` for one of your own.
+
+**The Raspberry Pi star camera is wired up but not connected.** `star-tracker/camera.py` runs on the Pi (Flask +
+Picamera2) and serves the current frame at `GET /frame`; point the server at it under *Pi star camera* in the sidebar
+and **Capture and solve** goes through to the real sky. Everything from the solve down is the same code the stock
+images use, so there is nothing left to write on this side when the hardware arrives.
+
 ## RL autopilot (no hardware needed)
 
 `flightsim/` asks the next question: if the navigation solution is all you have, can something
@@ -139,7 +181,9 @@ connections to the three controls start at almost zero and grow in.
 - **New tracking method page**: add a component in `frontend/src/pages/` and swap it in for `Placeholder` in `frontend/src/App.svelte`.
 - Server API: `GET/POST/PUT/DELETE /api/towers`, `POST /api/towers/{name}/calibrate`, `POST /api/track/reset`, WebSocket `/ws` (live state at 10 Hz),
   `GET /api/leo/info` + `POST /api/leo/simulate` for the LEO page, `POST /api/fusion/simulate` for the fusion page,
-  `GET /api/flight/list` + `GET /api/flight/replay` for the RL autopilot replays. Docs at http://localhost:8000/docs.
+  `GET /api/flight/list` + `GET /api/flight/replay` for the RL autopilot replays,
+  `GET /api/star/info`, `GET /api/star/sample/{key}`, `POST /api/star/sample`, `POST /api/star/solve` (multipart photo
+  upload), `POST /api/star/capture` and `GET/POST /api/star/camera` for the star camera. Docs at http://localhost:8000/docs.
 - **Space view**: `frontend/src/lib/SpaceView.svelte` is the shared pane (3D/2D toggle + playback) used by both pages;
   `frontend/src/scene/SpaceGlobe.svelte` (Threlte) and `SpaceMap2D.svelte` (SVG) render the `scene` block a simulation
   returns - satellite positions, visibility, ground beacons and any number of estimated tracks, in ECEF kilometres.
