@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
 import math
 import sys
@@ -527,6 +528,7 @@ class CameraConfig:
 
 
 camera = CameraConfig()
+last_frame: tuple[bytes, str, float] | None = None   # (image, content type, unix time) of the last Pi frame
 
 
 def camera_info() -> dict:
@@ -551,11 +553,20 @@ def capture_frame() -> bytes:
             "the Pi camera is switched off; set its address and enable it first "
             "(the Pi runs star-tracker/camera.py)"
         )
+    global last_frame
     try:
         with urllib.request.urlopen(camera.url, timeout=camera.timeout_s) as r:
             if r.status != 200:
                 raise StarCameraError(f"the Pi answered HTTP {r.status}")
-            return r.read()
+            data = r.read()
+            last_frame = (data, r.headers.get("Content-Type") or "image/jpeg", time.time())
+            return data
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode()).get("error")
+        except Exception:
+            detail = None
+        raise StarCameraError(f"the Pi camera answered HTTP {e.code}: {detail or e.reason}") from e
     except urllib.error.URLError as e:
         raise StarCameraError(f"cannot reach the Pi camera at {camera.url}: {e.reason}") from e
     except TimeoutError as e:

@@ -6,11 +6,12 @@
   import Fusion from './pages/Fusion.svelte';
   import Autopilot from './pages/Autopilot.svelte';
   import StarCamera from './pages/StarCamera.svelte';
+  import ImuLive from './pages/ImuLive.svelte';
 
   // Add new tracking methods here; each gets a sidebar entry and a page.
   const pages = [
     { id: 'trilateration', label: 'Cell Tower Trilateration', icon: 'tower', component: Trilateration },
-    { id: 'imu', label: 'IMU / Dead Reckoning', icon: 'compass', component: Placeholder },
+    { id: 'imu', label: 'IMU (live from Pi)', icon: 'compass', component: ImuLive },
     { id: 'star', label: 'Star Camera', icon: 'star', component: StarCamera },
     { id: 'leo', label: 'LEO Satellite', icon: 'satellite', component: LeoSat },
     { id: 'fusion', label: 'Sensor Fusion', icon: 'fusion', component: Fusion },

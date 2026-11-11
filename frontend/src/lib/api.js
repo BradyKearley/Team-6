@@ -63,6 +63,14 @@ export const api = {
   starCapture: (opt = {}) => req('POST', '/api/star/capture', opt),
   starCamera: () => req('GET', '/api/star/camera'),
   setStarCamera: (cfg) => req('POST', '/api/star/camera', cfg),
+  starFrameUrl: (fresh = true) => `/api/star/frame?fresh=${fresh}&t=${Date.now()}`,
+  // Raspberry Pi agent: IMU + camera over Wi-Fi (server/app/pi.py, pi/team6_pi_agent.py)
+  pi: () => req('GET', '/api/pi'),
+  piConnect: (cfg) => req('POST', '/api/pi/connect', cfg),
+  piAttach: (url) => req('POST', '/api/pi/attach', { url }),
+  piSim: () => req('POST', '/api/pi/sim'),
+  piStop: () => req('POST', '/api/pi/stop'),
+  piCalibrate: () => req('POST', '/api/pi/calibrate'),
   // RL autopilot replays, recorded by flightsim/fly.py
   flightList: () => req('GET', '/api/flight/list'),
   flightReplay: (name = 'fused') => req('GET', `/api/flight/replay?name=${encodeURIComponent(name)}`),

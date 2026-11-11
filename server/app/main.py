@@ -27,7 +27,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import pi as pi_mod
 from .sources.ble import BleSource
+from .sources.pi_http import PiSource
 from .sources.serial_src import SerialSource, guess_port
 from .sources.simulator import SimulatorSource
 from .state import SystemState
@@ -80,7 +82,7 @@ class SimIn(BaseModel):
 
 
 class SourceIn(BaseModel):
-    kind: Literal["sim", "serial", "ble"]
+    kind: Literal["sim", "serial", "ble", "pi"]
     port: str | None = None  # serial only; None = auto-detect
 
 
@@ -158,6 +160,22 @@ class CameraIn(BaseModel):
     enabled: bool | None = None
 
 
+class PiConnectIn(BaseModel):
+    """Start the agent on the Pi over SSH (POST /api/pi/connect)."""
+
+    host: str = Field(min_length=1, max_length=120)          # e.g. 172.20.10.5 or raspberrypi.local
+    user: str = Field("pi", min_length=1, max_length=64)
+    password: str | None = Field(None, max_length=200)       # blank = use SSH keys
+    port: int = Field(5000, ge=1024, le=65535)
+    fake_imu: bool = False                                   # test the link without a sensor
+
+
+class PiAttachIn(BaseModel):
+    """The agent is already running on the Pi (POST /api/pi/attach)."""
+
+    url: str = Field(min_length=1, max_length=300)           # e.g. http://172.20.10.5:5000
+
+
 class FlightIn(BaseModel):
     """Fly the RL policy in one situation (POST /api/flight/live)."""
 
@@ -194,6 +212,8 @@ async def switch_source(kind: str, port: str | None = None) -> None:
         source = SimulatorSource(towers)
     elif kind == "serial":
         source = SerialSource(port)
+    elif kind == "pi":
+        source = PiSource()
     else:
         source = BleSource(startup["ble_name"])
     source_port = port
@@ -254,7 +274,7 @@ async def broadcaster() -> None:
         await asyncio.sleep(0.1)
         if not clients:
             continue
-        snap = state.snapshot(link_info())
+        snap = live_snapshot()
         for ws in list(clients):
             try:
                 await ws.send_json(snap)
@@ -262,12 +282,20 @@ async def broadcaster() -> None:
                 clients.discard(ws)
 
 
+def live_snapshot() -> dict:
+    snap = state.snapshot(link_info())
+    snap["pi"] = pi_mod.pi.snapshot()  # the Raspberry Pi's IMU (app/pi.py)
+    return snap
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await switch_source(startup["kind"], startup["port"])
     task = asyncio.create_task(broadcaster())
+    pi_task = asyncio.create_task(pi_mod.poller())
     yield
     task.cancel()
+    pi_task.cancel()
     if source_task:
         source_task.cancel()
 
@@ -279,7 +307,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # ---- live state -------------------------------------------------------------------------
 @app.get("/api/state")
 def get_state():
-    return state.snapshot(link_info())
+    return live_snapshot()
 
 
 @app.websocket("/ws")
@@ -287,7 +315,7 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     clients.add(ws)
     try:
-        await ws.send_json(state.snapshot(link_info()))
+        await ws.send_json(live_snapshot())
         while True:
             await ws.receive_text()  # keepalive; client messages ignored
     except WebSocketDisconnect:
@@ -666,6 +694,66 @@ def star_camera_set(body: CameraIn):
     return _star_call(star.set_camera, body.url, body.timeout_s, body.enabled)
 
 
+@app.get("/api/star/frame")
+async def star_frame(fresh: bool = True):
+    """One frame off the Pi camera, as an image - the "does the camera work?" check.
+
+    fresh=false returns the frame the last capture-and-solve used instead of taking a new one.
+    """
+    star = _star()
+    if fresh:
+        data = await asyncio.to_thread(_star_call, star.capture_frame)
+        ctype = star.last_frame[1] if star.last_frame else "image/jpeg"
+    else:
+        if not star.last_frame:
+            raise HTTPException(404, "no frame captured from the Pi yet")
+        data, ctype, _ = star.last_frame
+    return Response(data, media_type=ctype, headers={"Cache-Control": "no-store"})
+
+
+# ---- Raspberry Pi: IMU + camera agent (app/pi.py) ---------------------------------------------
+def _pi_call(fn, *args, **kw):
+    try:
+        return fn(*args, **kw)
+    except pi_mod.PiError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/pi")
+def pi_get():
+    return pi_mod.pi.snapshot()
+
+
+@app.post("/api/pi/connect")
+async def pi_connect(body: PiConnectIn):
+    """SSH into the Pi, copy pi/team6_pi_agent.py over, start it and begin polling its IMU."""
+    return await asyncio.to_thread(_pi_call, pi_mod.deploy, body.host.strip(), body.user.strip(),
+                                   body.password, body.port, body.fake_imu)
+
+
+@app.post("/api/pi/attach")
+async def pi_attach(body: PiAttachIn):
+    """Use an agent that's already running (started by hand on the Pi)."""
+    return await asyncio.to_thread(_pi_call, pi_mod.attach, body.url.strip())
+
+
+@app.post("/api/pi/sim")
+def pi_sim():
+    """A simulated IMU computed on the server - try the page with no Pi."""
+    return pi_mod.start_sim()
+
+
+@app.post("/api/pi/stop")
+async def pi_stop():
+    return await asyncio.to_thread(pi_mod.stop)
+
+
+@app.post("/api/pi/calibrate")
+async def pi_calibrate():
+    """Re-measure the gyro bias and re-level (hold the sensor still for 2 s)."""
+    return await asyncio.to_thread(_pi_call, pi_mod.calibrate)
+
+
 # ---- data source + simulator ----------------------------------------------------------------
 @app.post("/api/source")
 async def set_source(body: SourceIn):
@@ -703,7 +791,7 @@ if FRONTEND_DIST.exists():  # serve the built UI from the same port
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", choices=["sim", "serial", "ble"], default="sim")
+    p.add_argument("--source", choices=["sim", "serial", "ble", "pi"], default="sim")
     p.add_argument("--port", help="serial port, e.g. COM5 (auto-detected if omitted)")
     p.add_argument("--ble-name", default="PLANE-T6")
     p.add_argument("--host", default="127.0.0.1")

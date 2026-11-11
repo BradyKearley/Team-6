@@ -14,6 +14,7 @@
   import StarGlobe from '../scene/StarGlobe.svelte';
   import { api } from '../lib/api.js';
   import { hint as tip } from '../lib/hint.js';
+  import PiConnect from '../lib/PiConnect.svelte';
 
   let { title } = $props();
 
@@ -91,11 +92,39 @@
     );
   }
 
-  function capture() {
+  async function capture() {
     source = { kind: 'pi', key: null, label: 'Pi star camera' };
     setPhoto('');
-    tab = 'solver';
-    run('Capturing from the Pi…', () => api.starCapture(solverOverrides()));
+    tab = 'photo';
+    await run('Capturing from the Pi…', () => api.starCapture(solverOverrides()));
+    if (!error) {
+      setPhoto(api.starFrameUrl(false)); // the exact frame that was solved
+      tab = res?.solved ? 'solver' : 'photo';
+    }
+  }
+
+  /** Take one photo and just show it - the "is the camera working?" check. No solve. */
+  async function testPhoto() {
+    source = { kind: 'pi', key: null, label: 'Pi camera test photo' };
+    busy = 'Taking a photo on the Pi…';
+    error = '';
+    try {
+      const r = await fetch(api.starFrameUrl(true));
+      if (!r.ok) {
+        let detail = r.statusText;
+        try {
+          detail = (await r.json()).detail ?? detail;
+        } catch {}
+        throw new Error(detail);
+      }
+      setPhoto(URL.createObjectURL(await r.blob()), true);
+      res = null;
+      tab = 'photo';
+    } catch (e) {
+      error = e.message;
+    } finally {
+      busy = '';
+    }
   }
 
   /** Re-solve whatever is loaded, with the current settings. Uploads are not re-solvable:
@@ -395,11 +424,13 @@
     <section>
       <h2>Pi star camera</h2>
       <p class="sub">
-        Not wired to hardware yet. <code>star-tracker/camera.py</code> runs on the Pi and serves its current frame at
-        <code>/frame</code>; point the server at it and this button goes through to the real sky. Everything from the
-        solve down is the same code the stock images use.
+        Connect to the Pi below (same connection as the IMU page) and the camera address is filled in for you. Take a
+        test photo first: it shows up in the preview, bottom right. Everything from the solve down is the same code the
+        stock images use.
       </p>
-      <button class="wide" onclick={capture} disabled={!!busy}>Capture and solve</button>
+      <button class="wide" onclick={testPhoto} disabled={!!busy || !camera.enabled}>Take a test photo</button>
+      <button class="wide" onclick={capture} disabled={!!busy || !camera.enabled}>Capture and solve</button>
+      {#if !camera.enabled}<p class="sub top">Connect to the Pi first, or set the address by hand below.</p>{/if}
       <button class="link" onclick={() => (showCamera = !showCamera)}>{showCamera ? 'Hide' : 'Show'} the address</button>
       {#if showCamera}
         <label class="stack">
@@ -411,6 +442,8 @@
         <button class="wide" onclick={() => saveCamera(camera)}>Save address</button>
       {/if}
     </section>
+
+    <PiConnect onchange={async () => (camera = { ...(await api.starCamera()) })} />
 
     <section>
       <p class="hint">

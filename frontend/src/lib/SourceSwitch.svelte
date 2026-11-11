@@ -2,11 +2,13 @@
   // Pick where plane data comes from: simulator, plane on USB, or plane over Bluetooth.
   import { live } from './live.svelte.js';
   import { api } from './api.js';
+  import PiConnect from './PiConnect.svelte';
 
   const kinds = [
     { id: 'sim', label: 'Sim', title: 'Simulated plane, no hardware' },
     { id: 'serial', label: 'USB', title: 'Real plane plugged in by USB cable' },
     { id: 'ble', label: 'BLE', title: 'Real plane over Bluetooth (PLANE-T6)' },
+    { id: 'pi', label: 'Pi', title: 'Heltec plugged into the Raspberry Pi, relayed over Wi-Fi' },
   ];
 
   let current = $derived(live.data?.link?.source);
@@ -62,6 +64,10 @@
       </select>
     </div>
   {/if}
+  {#if current === 'pi'}
+    <div class="status">{live.data?.link?.status}</div>
+    <div class="pi"><PiConnect /></div>
+  {/if}
   {#if error}<div class="err">{error}</div>{/if}
 </div>
 
@@ -95,6 +101,14 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 3px 4px;
+  }
+  .status {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .pi {
+    margin-top: 8px;
   }
   .err {
     margin-top: 6px;
